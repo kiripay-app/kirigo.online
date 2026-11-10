@@ -57,7 +57,7 @@ export async function priceDrivers(env: Env, s: Settings, from: LatLng, distance
            (SELECT COUNT(*) FROM orders o WHERE o.driver_id=d.id AND o.status IN ('DRIVER_ASSIGNED','AT_SHOP','PICKED_UP','ARRIVED') AND o.kind <> 'enroute') AS busy
     FROM drivers d JOIN rate_cards r ON r.driver_id=d.id
     JOIN vehicles v ON v.driver_id=d.id AND v.active=1
-    WHERE d.status='approved' AND ${feeOk} AND d.id IN (${qs})`).bind(now, ...ids).all<any>();
+    WHERE d.status='approved' AND d.deliveries_on=1 AND ${feeOk} AND d.id IN (${qs})`).bind(now, ...ids).all<any>();
   const night = s.night_hours ? inKiWindow(Date.now(), s.night_hours.start, s.night_hours.end) : false;
   const byId = new Map(near.map((n) => [n.driverId, n]));
   const out: QuoteOption[] = [];

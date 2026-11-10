@@ -1,4 +1,4 @@
-import type { Cents, RateCard, Settings, Size } from './types';
+import type { Cents, RateCard, RideRateCard, Settings, Size } from './types';
 
 export interface PriceOptions {
   night: boolean;
@@ -47,4 +47,18 @@ export function validateRateCard(rc: RateCard): string[] {
     if (!Number.isInteger(v) || v < 0) errs.push(`${k} must be a whole, non-negative number of cents`);
   }
   return errs;
+}
+
+/** Ride fare, fixed when booked: max(minimum, base + perKm × km) + night extra. Same admin caps as deliveries. */
+export function priceRide(rc: RideRateCard, distanceM: number, night: boolean, caps: PriceCaps): Cents {
+  if (!Number.isFinite(distanceM) || distanceM < 0) throw new Error('distance must be a non-negative number');
+  const perKm = caps.max_per_km_cents == null ? rc.perKmCents : Math.min(rc.perKmCents, caps.max_per_km_cents);
+  const minimum = caps.floor_minimum_cents == null ? rc.minimumCents : Math.max(rc.minimumCents, caps.floor_minimum_cents);
+  return Math.max(minimum, rc.baseCents + Math.round(perKm * (distanceM / 1000))) + (night ? rc.nightCents : 0);
+}
+
+/** Waiting charge at pickup: free minutes first, then per minute, never more than the buffer held for it. */
+export function waitingCharge(arrivedAtMs: number, boardedAtMs: number, freeMin: number, perMinCents: Cents, capCents: Cents): Cents {
+  const mins = Math.floor(Math.max(0, boardedAtMs - arrivedAtMs) / 60_000) - freeMin;
+  return Math.max(0, Math.min(capCents, mins * perMinCents));
 }

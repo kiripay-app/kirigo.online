@@ -1,4 +1,4 @@
-import { displayRating, STATUS_LABEL } from '@kirigo/shared';
+import { displayRating, RIDE_LABEL, STATUS_LABEL } from '@kirigo/shared';
 import type { Actor, Env } from '../env';
 import type { OrderRow } from './orders';
 import { canSeePhoto, photoUrl, type PhotoKind } from './photos';
@@ -31,8 +31,15 @@ export async function orderView(env: Env, o: OrderRow, viewer: Actor) {
   let customerPhone: string | null = null;
   void customerPhone;
   return {
-    id: o.id, kind: o.kind, parentOrderId: o.parent_order_id, status: o.status,
-    label: LABEL_BY_KIND[o.kind]?.[o.status] ?? STATUS_LABEL[o.status],
+    id: o.id, kind: o.kind, service: o.service, parentOrderId: o.parent_order_id, status: o.status,
+    label: o.service === 'ride' ? RIDE_LABEL[o.status] : LABEL_BY_KIND[o.kind]?.[o.status] ?? STATUS_LABEL[o.status],
+    ride: o.service === 'ride' ? {
+      seats: o.seats, fareCents: o.delivery_cents, bufferCents: o.goods_cents, waitingCents: o.waiting_cents,
+      pickup: driverMayLocate ? { lat: o.pickup_lat, lng: o.pickup_lng, note: o.landmark } : { area: approxArea(o.pickup_lat, o.pickup_lng) },
+      dropNote: o.drop_note, etaS: o.eta_s, emergency: !!o.emergency_at,
+      sharingWith: viewer.type === 'customer' ? ((await env.DB.prepare('SELECT COUNT(*) AS n FROM trip_buddies WHERE order_id=? AND stopped_at IS NULL').bind(o.id).first<{ n: number }>())?.n ?? 0) : undefined,
+      sharing: viewer.type === 'driver' ? !!(await env.DB.prepare('SELECT 1 FROM trip_buddies WHERE order_id=? AND stopped_at IS NULL').bind(o.id).first()) : undefined,
+    } : undefined,
     source: o.source, sourceRef: o.source_ref,
     shop: { id: o.shop_id, name: shop?.name ?? '', pickup: { lat: o.pickup_lat, lng: o.pickup_lng }, note: shop?.pickup_note ?? '' },
     dropoff: driverMayLocate ? { lat: o.drop_lat, lng: o.drop_lng, landmark: o.landmark } : { area: approxArea(o.drop_lat, o.drop_lng) },

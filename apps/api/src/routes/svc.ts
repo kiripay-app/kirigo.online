@@ -1,4 +1,4 @@
-import { createOrderRequest, problemRequest, quoteRequest, rateRequest, roadDistance, PRE_PICKUP } from '@kirigo/shared';
+import { createOrderRequest, createRideRequest, problemRequest, quoteRequest, rateRequest, rideQuoteRequest, roadDistance, PRE_PICKUP } from '@kirigo/shared';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { AppEnv } from '../env';
@@ -11,6 +11,7 @@ import { cancelOrder, eventStmt, getOrder, settleAccept, type OrderRow } from '.
 import { savePhoto } from '../lib/photos';
 import { answerDiscount, correctionAccepted, reportProblem } from '../lib/problems';
 import { submitRatings } from '../lib/ratings';
+import { addBuddies, alertsFor, cancelRide, emergency, following, isBuddy, makeRideQuote, priceRideDrivers, RIDE_SHOP, stopSharing } from '../lib/rides';
 import { loadSettings } from '../lib/settings';
 import { orderView } from '../lib/views';
 import { ApiError, body, newId, nowIso } from '../lib/util';
@@ -85,7 +86,7 @@ svc.post('/orders', async (c) => {
 });
 
 svc.get('/orders', async (c) => {
-  const { results } = await c.env.DB.prepare("SELECT * FROM orders WHERE customer_id=? AND kind='delivery' ORDER BY created_at DESC LIMIT 50").bind(me(c)).all<OrderRow>();
+  const { results } = await c.env.DB.prepare("SELECT * FROM orders WHERE customer_id=? AND kind='delivery' AND service='delivery' ORDER BY created_at DESC LIMIT 50").bind(me(c)).all<OrderRow>();
   return c.json(await Promise.all((results ?? []).map((o) => orderView(c.env, o, c.get('actor')))));
 });
 
@@ -106,6 +107,7 @@ svc.get('/orders/:id/track-ticket', async (c) => {
 /** "Received, all correct": the shop is paid. */
 svc.post('/orders/:id/accept', async (c) => {
   const o = await mine(c, c.req.param('id'));
+  if (o.service === 'ride') throw new ApiError('NOT_A_DELIVERY', 409);
   if (o.status !== 'HANDED_OVER') throw new ApiError('NOT_DELIVERED_YET', 409);
   if (o.kind === 'correction') await correctionAccepted(c.env, o, c.get('actor'));
   else if (o.kind === 'delivery') await settleAccept(c.env, o, c.get('actor'), { shopAtFault: false });
@@ -115,6 +117,7 @@ svc.post('/orders/:id/accept', async (c) => {
 
 svc.post('/orders/:id/problem', async (c) => {
   const o = await mine(c, c.req.param('id'));
+  if (o.service === 'ride') throw new ApiError('NOT_A_DELIVERY', 409);
   return c.json(await reportProblem(c.env, o, c.get('actor'), await body(c, problemRequest)));
 });
 
@@ -127,6 +130,7 @@ svc.post('/orders/:id/discount', async (c) => {
 
 svc.post('/orders/:id/cancel', async (c) => {
   const o = await mine(c, c.req.param('id'));
+  if (o.service === 'ride') return c.json(await orderView(c.env, await cancelRide(c.env, o, c.get('actor')), c.get('actor')));
   if (!PRE_PICKUP.includes(o.status)) throw new ApiError('TOO_LATE_TO_CANCEL', 409);
   if (o.kind !== 'delivery') throw new ApiError('CANNOT_CANCEL_THIS', 409);
   await c.env.DB.prepare("UPDATE offers SET result='withdrawn' WHERE order_id=? AND result IS NULL").bind(o.id).run();
@@ -141,7 +145,9 @@ svc.get('/orders/:id/drivers', async (c) => {
   const s = await loadSettings(c.env.DB);
   const sort = (c.req.query('sort') as 'closest' | 'cheapest' | 'top_rated') || 'closest';
   const distance = roadDistance({ lat: o.pickup_lat, lng: o.pickup_lng }, { lat: o.drop_lat, lng: o.drop_lng }, road(c.env));
-  const all = await priceDrivers(c.env, s, { lat: o.pickup_lat, lng: o.pickup_lng }, distance, o.size as any);
+  const all = o.service === 'ride'
+    ? await priceRideDrivers(c.env, s, { lat: o.pickup_lat, lng: o.pickup_lng }, distance, o.seats, null)
+    : await priceDrivers(c.env, s, { lat: o.pickup_lat, lng: o.pickup_lng }, distance, o.size as any);
   const fits = await affordable(c, o, all);
   return c.json({ options: sortOptions(fits, sort, s.drivers_shown), paysBy: o.kind === 'delivery' ? 'you (already paid)' : 'the shop' });
 });
@@ -165,7 +171,9 @@ svc.post('/orders/:id/choose-driver', async (c) => {
   const b = await body(c, z.object({ driverId: z.string() }));
   if (o.status !== 'PAID_HELD' || o.offer_driver_id) throw new ApiError('NOT_CHOOSING', 409);
   const s = await loadSettings(c.env.DB);
-  const all = await priceDrivers(c.env, s, { lat: o.pickup_lat, lng: o.pickup_lng }, o.distance_m, o.size as any);
+  const all = o.service === 'ride'
+    ? await priceRideDrivers(c.env, s, { lat: o.pickup_lat, lng: o.pickup_lng }, o.distance_m, o.seats, null)
+    : await priceDrivers(c.env, s, { lat: o.pickup_lat, lng: o.pickup_lng }, o.distance_m, o.size as any);
   const pick = (await affordable(c, o, all)).find((d) => d.driverId === b.driverId);
   if (!pick) throw new ApiError('DRIVER_NOT_AVAILABLE', 409);
   if (o.kind === 'delivery') {
@@ -216,3 +224,127 @@ svc.post('/dev/hold', async (c) => {
   return c.json({ holdId: await mockCreateHold(c.env.DB, me(c), b.amountCents) });
 });
 
+
+// ================================================================== rides (customer side, via KiriPay)
+
+svc.post('/rides/quotes', async (c) => {
+  const b = await body(c, rideQuoteRequest);
+  return c.json(await makeRideQuote(c.env, me(c), b.pickup, b.dropoff, b.seats, b.sort));
+});
+
+/** Book a ride. The rider has ALREADY paid fare + refundable buffer into a KiriPay hold. */
+svc.post('/rides', async (c) => {
+  const b = await body(c, createRideRequest);
+  const customerId = me(c);
+  const s = await loadSettings(c.env.DB);
+  if (!s.rides_open) throw new ApiError('RIDES_NOT_OPEN', 503);
+  const q = await c.env.DB.prepare('SELECT * FROM quotes WHERE id=?').bind(b.quoteId).first<any>();
+  if (!q || q.customer_id !== customerId || q.shop_id !== RIDE_SHOP) throw new ApiError('QUOTE_NOT_FOUND', 404);
+  if (q.used_by_order) throw new ApiError('QUOTE_USED', 409);
+  if (q.expires_at < nowIso()) throw new ApiError('QUOTE_EXPIRED', 409);
+  const [seatsPart, pickupPart] = String(q.size).split('|');
+  const seats = Number(seatsPart!.split(':')[1]);
+  const [plat, plng] = pickupPart!.split(',').map(Number);
+  const options: QuoteOption[] = JSON.parse(q.options_json);
+  const chosen = options.find((o) => o.driverId === b.driverId);
+  if (!chosen) throw new ApiError('DRIVER_NOT_IN_QUOTE', 422);
+  const total = chosen.priceCents + s.ride_buffer_cents;
+  const kp = kiripay(c.env);
+  const hold = await kp.getHold(b.holdId);
+  if (!hold || hold.payerId !== customerId) throw new ApiError('HOLD_NOT_FOUND', 404);
+  if (hold.status !== 'open' || hold.remaining !== total || hold.amount !== total) throw new ApiError('HOLD_AMOUNT_MISMATCH', 409, { expected: total, held: hold.remaining });
+  const id = newId('ord');
+  const bound = await kp.bindHold(b.holdId, id);
+  if (!bound.ok) throw new ApiError(bound.code, 409);
+  const fallback = b.fallbackDriverIds.map((d) => options.find((o) => o.driverId === d)).filter(Boolean).map((o) => ({ driverId: o!.driverId, priceCents: o!.priceCents }));
+  const ins = await c.env.DB.batch([
+    c.env.DB.prepare('INSERT INTO customers (id) VALUES (?) ON CONFLICT(id) DO NOTHING').bind(customerId),
+    c.env.DB.prepare(`INSERT INTO orders (id, kind, service, source, source_ref, shop_id, customer_id, quote_id, fallback_json, pickup_lat, pickup_lng, drop_lat, drop_lng,
+      landmark, drop_note, size, seats, distance_m, goods_cents, delivery_cents, hold_id, status, share_phone)
+      VALUES (?,'delivery','ride','kiripay_ride',?,?,?,?,?,?,?,?,?,?,?,'small',?,?,?,?,?,'PAID_HELD',?) ON CONFLICT(source, source_ref, kind) DO NOTHING`)
+      .bind(id, b.sourceRef, RIDE_SHOP, customerId, q.id, JSON.stringify(fallback), plat, plng, q.drop_lat, q.drop_lng, b.pickupNote, b.dropNote,
+        seats, q.distance_m, s.ride_buffer_cents, chosen.priceCents, b.holdId, b.sharePhone ? 1 : 0),
+    c.env.DB.prepare('UPDATE quotes SET used_by_order=? WHERE id=? AND used_by_order IS NULL').bind(id, q.id),
+  ]);
+  if (!ins[1]?.meta.changes) {
+    await moveMoney(c.env, { orderId: null, amount: total, key: `dup:${b.holdId}:refund`, reference: 'KiriGo: duplicate ride', move: { action: 'refund', holdId: b.holdId } });
+    throw new ApiError('RIDE_EXISTS', 409);
+  }
+  await eventStmt(c.env.DB, id, c.get('actor'), 'created', { service: 'ride', fareCents: chosen.priceCents, bufferCents: s.ride_buffer_cents, seats }).run();
+  const o = await getOrder(c.env.DB, id);
+  if (b.buddies.length) await addBuddies(c.env, o, b.buddies);
+  await offer(c.env, o, chosen.driverId, chosen.priceCents);
+  return c.json(await orderView(c.env, o, c.get('actor')), 201);
+});
+
+svc.get('/rides', async (c) => {
+  const { results } = await c.env.DB.prepare("SELECT * FROM orders WHERE customer_id=? AND service='ride' ORDER BY created_at DESC LIMIT 30").bind(me(c)).all<OrderRow>();
+  return c.json(await Promise.all((results ?? []).map((o) => orderView(c.env, o, c.get('actor')))));
+});
+
+/** Trip buddy: let KiriPay contacts follow this trip, or stop sharing. */
+svc.post('/orders/:id/buddies', async (c) => {
+  const o = await mine(c, c.req.param('id'));
+  const b = await body(c, z.object({ userIds: z.array(z.string().regex(/^[A-Za-z0-9_-]{3,80}$/)).min(1).max(5) }));
+  if (o.closed_at) throw new ApiError('TRIP_ENDED', 409);
+  await addBuddies(c.env, o, b.userIds);
+  return c.json({ ok: true });
+});
+svc.delete('/orders/:id/buddies', async (c) => {
+  await stopSharing(c.env, await mine(c, c.req.param('id')));
+  return c.json({ ok: true });
+});
+
+/** Emergency button (rider). Alerts Trip buddies and KiriGo admin with the live location. */
+svc.post('/orders/:id/emergency', async (c) => {
+  const o = await mine(c, c.req.param('id'));
+  const b = await body(c, z.object({ lat: z.number().optional(), lng: z.number().optional() }));
+  await emergency(c.env, o, 'customer', b.lat != null && b.lng != null ? { lat: b.lat, lng: b.lng } : null);
+  return c.json({ ok: true });
+});
+
+/** Trips this member is following as a Trip buddy (the friend's view). */
+svc.get('/following', async (c) => {
+  const trips = await following(c.env, me(c));
+  return c.json(await Promise.all(trips.map(async (o) => ({ ...(await buddyView(c.env, o)), alerts: await alertsFor(c.env, o.id) }))));
+});
+
+svc.get('/following/:id/track-ticket', async (c) => {
+  const id = c.req.param('id');
+  if (!(await isBuddy(c.env, id, me(c)))) throw new ApiError('ORDER_NOT_FOUND', 404);
+  return c.json({ ticket: await trackTicket(c.env, id, `buddy:${me(c)}`), ws: `/ws/orders/${id}` });
+});
+
+/** A buddy sees the driver card, route and progress — not money, not codes. */
+async function buddyView(env: any, o: OrderRow) {
+  const v = await orderView(env, o, { type: 'customer', id: o.customer_id });
+  return {
+    id: v.id, status: v.status, label: v.label, driver: v.driver, pickup: { lat: o.pickup_lat, lng: o.pickup_lng }, dropoff: { lat: o.drop_lat, lng: o.drop_lng },
+    riderFirstName: (await env.DB.prepare('SELECT first_name FROM customers WHERE id=?').bind(o.customer_id).first())?.first_name ?? null,
+    times: v.times, etaS: o.eta_s, arrivedSafely: o.status === 'ACCEPTED',
+  };
+}
+
+/** Latest driver position (for screens that poll instead of holding a socket open, e.g. the KiriPay app). */
+async function lastPosition(env: any, orderId: string) {
+  const stub = env.ORDER_TRACKER.get(env.ORDER_TRACKER.idFromName(orderId));
+  const r = await stub.fetch('https://do/last');
+  return r.ok ? r.json() : null;
+}
+svc.get('/orders/:id/position', async (c) => {
+  const o = await mine(c, c.req.param('id'));
+  return c.json({ status: o.status, last: await lastPosition(c.env, o.parent_order_id ?? o.id) });
+});
+svc.get('/following/:id/position', async (c) => {
+  const id = c.req.param('id');
+  if (!(await isBuddy(c.env, id, me(c)))) throw new ApiError('ORDER_NOT_FOUND', 404);
+  const o = await getOrder(c.env.DB, id);
+  return c.json({ status: o.status, last: await lastPosition(c.env, id) });
+});
+/** The friend presses "Alert KiriGo". */
+svc.post('/following/:id/alert', async (c) => {
+  const id = c.req.param('id');
+  if (!(await isBuddy(c.env, id, me(c)))) throw new ApiError('ORDER_NOT_FOUND', 404);
+  await emergency(c.env, await getOrder(c.env.DB, id), 'buddy', null);
+  return c.json({ ok: true });
+});

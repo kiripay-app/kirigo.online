@@ -80,6 +80,18 @@ export interface Settings {
   quote_valid_min: number;
   driver_signup_open: boolean;
   delivery_open: boolean;
+  // rides
+  rides_open: boolean;
+  ride_buffer_cents: Cents;        // refundable extra held with each fare, covers waiting time / late-cancel fee
+  ride_free_wait_min: number;
+  ride_free_cancel_min: number;
+  ride_noshow_wait_min: number;
+  ride_min_deliveries: number;     // to be approved for rides
+  ride_min_rating: number;
+  buddy_after_min: number;         // Trip buddies keep seeing the trip this long after it ends
+  alert_offroute_m: number;
+  alert_stop_min: number;
+  alert_overtime_factor: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -110,7 +122,27 @@ export const DEFAULT_SETTINGS: Settings = {
   quote_valid_min: 5,
   driver_signup_open: true,
   delivery_open: false,
+  rides_open: true,
+  ride_buffer_cents: 500,
+  ride_free_wait_min: 3,
+  ride_free_cancel_min: 2,
+  ride_noshow_wait_min: 5,
+  ride_min_deliveries: 20,
+  ride_min_rating: 4.3,
+  buddy_after_min: 15,
+  alert_offroute_m: 500,
+  alert_stop_min: 5,
+  alert_overtime_factor: 1.5,
 };
+
+export interface RideRateCard {
+  baseCents: Cents;
+  perKmCents: Cents;
+  minimumCents: Cents;
+  nightCents: Cents;
+  waitPerMinCents: Cents;
+  cancelCents: Cents;
+}
 
 /** Settings that block go-live while null. */
 export const REQUIRED_BEFORE_LAUNCH: (keyof Settings)[] = [

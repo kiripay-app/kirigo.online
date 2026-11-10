@@ -6,6 +6,7 @@ import { flushWebhooks, notify } from '../lib/notify';
 import { cancelOrder, getOrder, settleAccept, shopAtFault, type OrderRow } from '../lib/orders';
 import { continueProblem, returnReceived, shopFault } from '../lib/problems';
 import { unblindOld } from '../lib/ratings';
+import { overtimeCheck } from '../lib/rides';
 import { loadSettings } from '../lib/settings';
 
 const SYSTEM: Actor = { type: 'system', id: null };
@@ -29,12 +30,12 @@ export async function runCron(env: Env, at: Date) {
     ['webhooks', () => flushWebhooks(env)],
 
     // 24 h after handoff with no problem: the shop is paid (customer reminded 4 h before)
-    ['reminders', () => each(env, `SELECT * FROM orders o WHERE status='HANDED_OVER' AND kind IN ('delivery','correction') AND handed_over_at < ?
+    ['reminders', () => each(env, `SELECT * FROM orders o WHERE status='HANDED_OVER' AND service='delivery' AND kind IN ('delivery','correction') AND handed_over_at < ?
         AND NOT EXISTS (SELECT 1 FROM order_events e WHERE e.order_id=o.id AND e.type='reminder:confirm') LIMIT 50`, [ago(s.auto_release_h - 4)], async (o) => {
       await env.DB.prepare('INSERT INTO order_events (order_id, actor_type, type) VALUES (?,?,?)').bind(o.id, 'system', 'reminder:confirm').run();
       await notify(env, o, 'reminder:confirm');
     })],
-    ['auto-release', () => each(env, `SELECT * FROM orders WHERE status='HANDED_OVER' AND kind IN ('delivery','correction') AND handed_over_at < ? LIMIT 50`, [ago(s.auto_release_h)], async (o) => {
+    ['auto-release', () => each(env, `SELECT * FROM orders WHERE status='HANDED_OVER' AND service='delivery' AND kind IN ('delivery','correction') AND handed_over_at < ? LIMIT 50`, [ago(s.auto_release_h)], async (o) => {
       if (o.kind === 'correction') {
         const { correctionAccepted } = await import('../lib/problems');
         await correctionAccepted(env, o, SYSTEM);
@@ -72,6 +73,7 @@ export async function runCron(env: Env, at: Date) {
       (o) => continueProblem(env, o.id))],
 
     ['ratings', () => unblindOld(env, s.rating_blind_h)],
+    ['ride overtime', () => overtimeCheck(env)],
   ];
 
   // once a day at 00:30 Kiribati (12:30 UTC)

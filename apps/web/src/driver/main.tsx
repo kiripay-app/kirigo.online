@@ -230,7 +230,7 @@ function Home({ me, reload }: { me: any; reload: () => void }) {
           {offers.map((o) => <Offer key={o.offerId} o={o} onDone={(job) => { void refresh(); if (job) setOpen(job); }} />)}
           {jobs.map((j) => (
             <div className="card" key={j.id} onClick={() => setOpen(j.id)} style={{ cursor: 'pointer' }}>
-              <div className="between"><b>{j.kind === 'return' ? 'Return' : j.kind === 'correction' ? 'Correct item' : 'Delivery'} · {j.shop.name}</b><span className="pill">{j.label}</span></div>
+              <div className="between"><b>{j.service === 'ride' ? 'Ride' : j.kind === 'return' ? 'Return' : j.kind === 'correction' ? 'Correct item' : 'Delivery'}{j.service === 'ride' ? '' : ` · ${j.shop.name}`}</b><span className="pill">{j.label}</span></div>
               <p className="small">{money(j.deliveryCents)} · {(j.distanceM / 1000).toFixed(1)} km</p>
             </div>
           ))}
@@ -251,9 +251,9 @@ function Offer({ o, onDone }: { o: any; onDone: (jobId: string | null) => void }
   };
   return (
     <div className="card offer">
-      <div className="between"><b>{o.kind === 'return' ? 'Return pickup' : o.kind === 'correction' ? 'Correct item' : 'New delivery'}</b><span className="countdown pill warn">{left}s</span></div>
+      <div className="between"><b>{o.kind === 'ride' ? `New ride · ${o.seats} ${o.seats === 1 ? 'seat' : 'seats'}` : o.kind === 'return' ? 'Return pickup' : o.kind === 'correction' ? 'Correct item' : 'New delivery'}</b><span className="countdown pill warn">{left}s</span></div>
       <div className="big">{money(o.priceCents)}</div>
-      <p className="small">{o.shop} · {(o.distanceM / 1000).toFixed(1)} km · {o.size} · customer rating {typeof o.customerRating === 'number' ? o.customerRating.toFixed(1) : o.customerRating}</p>
+      <p className="small">{o.kind === 'ride' ? 'Passenger' : o.shop} · {(o.distanceM / 1000).toFixed(1)} km{o.kind === 'ride' ? '' : ` · ${o.size}`} · {o.kind === 'ride' ? 'rider' : 'customer'} rating {typeof o.customerRating === 'number' ? o.customerRating.toFixed(1) : o.customerRating}</p>
       {err && <div className="error">{err}</div>}
       <div className="row"><button className="secondary" onClick={() => act('decline')}>Decline</button><button onClick={() => act('accept')} disabled={!left}>Accept</button></div>
     </div>
@@ -293,6 +293,7 @@ function Job({ id, onClose }: { id: string; onClose: () => void }) {
   const notDelivered = async (reason: 'no_adult' | 'customer_absent') => { try { await call(`/api/driver/jobs/${id}/not-delivered`, { body: { reason, ...here() } }); onClose(); } catch (e) { setErr(explain(e)); } };
 
   if (!o) return <div className="app"><Top />{err ? <div className="error">{err}</div> : <p>Loading…</p>}</div>;
+  if (o.service === 'ride') return <RideJob o={o} setO={setO} onClose={onClose} />;
   const isReturn = o.kind === 'return';
   const order = ['DRIVER_ASSIGNED', 'AT_SHOP', 'PICKED_UP', 'ARRIVED', 'HANDED_OVER'];
   const at = order.indexOf(o.status);
@@ -328,6 +329,78 @@ function Job({ id, onClose }: { id: string; onClose: () => void }) {
       )}
       {['DRIVER_ASSIGNED', 'AT_SHOP'].includes(o.status) && <button className="secondary block" style={{ marginTop: 16 }} onClick={giveBack}>Give job back</button>}
       {o.status === 'HANDED_OVER' && <Rate orderId={o.id} isReturn={isReturn} onDone={onClose} />}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ a ride
+
+function RideJob({ o, setO, onClose }: { o: any; setO: (o: any) => void; onClose: () => void }) {
+  const [err, setErr] = useState('');
+  const [boarding, setBoarding] = useState(false);
+  const [code, setCode] = useState('');
+  const [sos, setSos] = useState('');
+  const act = async (path: string, body: unknown = here()) => {
+    setErr('');
+    try { setO(await call(`/api/driver/jobs/${o.id}/${path}`, { body })); setBoarding(false); } catch (e) { setErr(explain(e)); }
+  };
+  const step = (status: string, extra: any = {}) => act('status', { status, ...here(), ...extra });
+  const emergency = async () => {
+    if (!confirm('Send an emergency alert with your location to KiriGo?')) return;
+    try { await call(`/api/driver/jobs/${o.id}/emergency`, { body: here() }); setSos('Alert sent. KiriGo has your location.'); } catch (e) { setErr(explain(e)); }
+  };
+  const order = ['DRIVER_ASSIGNED', 'AT_SHOP', 'PICKED_UP', 'ACCEPTED'];
+  const at = Math.max(0, order.indexOf(o.status === 'ARRIVED' || o.status === 'HANDED_OVER' ? 'PICKED_UP' : o.status));
+  const active = ['DRIVER_ASSIGNED', 'AT_SHOP', 'PICKED_UP', 'ARRIVED'].includes(o.status);
+
+  if (boarding) return (
+    <div className="app"><Top /><h3>Scan the rider's boarding code</h3>{err && <div className="error">{err}</div>}
+      <QrScan onCode={(t) => step('picked_up', { token: t })} />
+      <label>…or type their 4-digit code</label>
+      <div className="row"><input inputMode="numeric" maxLength={4} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} /><button disabled={code.length !== 4} onClick={() => step('picked_up', { code })}>Start ride</button></div>
+      <button className="secondary block" style={{ marginTop: 8 }} onClick={() => setBoarding(false)}>Back</button>
+    </div>
+  );
+  return (
+    <div className="app">
+      <Top right={<button className="secondary" onClick={onClose}>Back</button>} />
+      <div className="steps">{order.map((s, i) => <span key={s} className={i <= at ? 'on' : ''} />)}</div>
+      <h2>{o.label}</h2>
+      {err && <div className="error">{err}</div>}
+      {sos && <div className="notice">{sos}</div>}
+      {o.ride.sharing && active && <p className="small">The rider is sharing this trip with someone they know.</p>}
+      <div className="card">
+        <div className="between"><b>Pick up</b><a href={mapsLink(o.ride.pickup)} target="_blank" rel="noreferrer">Directions</a></div>
+        {o.ride.pickup.note && <p className="small">{o.ride.pickup.note}</p>}
+        <p className="small">{o.ride.seats} {o.ride.seats === 1 ? 'passenger' : 'passengers'}</p>
+      </div>
+      <div className="card">
+        <div className="between"><b>Drop off</b><a href={mapsLink(o.dropoff)} target="_blank" rel="noreferrer">Directions</a></div>
+        {o.ride.dropNote && <p className="small">{o.ride.dropNote}</p>}
+        <p className="small">Fare {money(o.ride.fareCents)}{o.ride.waitingCents ? ` + waiting ${money(o.ride.waitingCents)}` : ''}</p>
+      </div>
+      {o.status === 'DRIVER_ASSIGNED' && <button className="block" onClick={() => step('at_pickup')}>I'm at the pickup</button>}
+      {o.status === 'AT_SHOP' && <>
+        <button className="block" onClick={() => setBoarding(true)}>Rider is here — scan boarding code</button>
+        <button className="secondary block" style={{ marginTop: 8 }} onClick={() => act('no-show')}>Rider didn't come</button>
+      </>}
+      {(o.status === 'PICKED_UP' || o.status === 'ARRIVED') && <button className="block" onClick={() => act('end-ride')}>End ride at destination</button>}
+      {['DRIVER_ASSIGNED', 'AT_SHOP'].includes(o.status) && <button className="secondary block" style={{ marginTop: 8 }} onClick={async () => { if (confirm('Give this ride back? It counts against your record.')) { try { await call(`/api/driver/jobs/${o.id}/release`, { method: 'POST' }); onClose(); } catch (e) { setErr(explain(e)); } } }}>Give ride back</button>}
+      {active && <button className="danger block" style={{ marginTop: 16 }} onClick={emergency}>Emergency</button>}
+      {o.status === 'ACCEPTED' && <RideRate orderId={o.id} onDone={onClose} />}
+    </div>
+  );
+}
+
+function RideRate({ orderId, onDone }: { orderId: string; onDone: () => void }) {
+  const [stars, setStars] = useState(5);
+  const send = async () => { try { await call(`/api/driver/jobs/${orderId}/rate`, { body: { ratings: [{ to: 'customer', stars }] } }); } catch { /* optional */ } onDone(); };
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <h3>Ride complete. You've been paid.</h3>
+      <label>Rate the rider</label>
+      <div className="row">{[1, 2, 3, 4, 5].map((n) => <button key={n} className={n <= stars ? '' : 'secondary'} onClick={() => setStars(n)}>★</button>)}</div>
+      <button className="block" style={{ marginTop: 12 }} onClick={send}>Send rating</button>
     </div>
   );
 }
@@ -445,6 +518,55 @@ function Rate({ orderId, isReturn, onDone }: { orderId: string; isReturn: boolea
 
 // ------------------------------------------------------------------ me
 
+function Services({ me, reload }: { me: any; reload: () => void }) {
+  const [msg, setMsg] = useState('');
+  const set = async (deliveries: boolean, rides: boolean) => {
+    try { await call('/api/driver/services', { method: 'PUT', body: { deliveries, rides } }); reload(); } catch (e) { setMsg(explain(e)); }
+  };
+  const rideOk = me.rides?.status === 'approved';
+  return (
+    <div className="card">
+      <h3>What I do</h3>
+      {me.online && <p className="small">Go offline to change this.</p>}
+      <div className="check"><input type="checkbox" disabled={me.online} checked={me.services.deliveries} onChange={(e) => set(e.target.checked, me.services.rides)} />Deliveries</div>
+      <div className="check"><input type="checkbox" disabled={me.online || !rideOk} checked={me.services.rides} onChange={(e) => set(me.services.deliveries, e.target.checked)} />Rides (passengers){!rideOk && <span className="pill" style={{ marginLeft: 8 }}>{me.rides?.status === 'pending' ? 'Being checked' : 'Not approved yet'}</span>}</div>
+      {msg && <p className="small">{msg}</p>}
+      {!rideOk && me.rides?.status !== 'pending' && ['car', 'van'].includes(me.vehicle?.type) && <RideApply onDone={reload} />}
+      {!['car', 'van'].includes(me.vehicle?.type) && <p className="small">Rides are for cars and vans.</p>}
+    </div>
+  );
+}
+
+function RideApply({ onDone }: { onDone: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [shot, setShot] = useState(false);
+  const [photo, setPhoto] = useState<string | null>(null);
+  const [f, setF] = useState({ seats: '4', base: '3.00', perKm: '1.50', minimum: '5.00', night: '0', wait: '0.50', cancel: '3.00' });
+  const [err, setErr] = useState('');
+  const c = (k: keyof typeof f) => (e: any) => setF({ ...f, [k]: e.target.value });
+  const cents = (v: string) => Math.round(Number(v || 0) * 100);
+  if (!open) return <button className="secondary block" style={{ marginTop: 8 }} onClick={() => setOpen(true)}>Apply to carry passengers</button>;
+  if (shot) return <div style={{ marginTop: 8 }}><p className="small">Photo of your car showing the plate, tyres and condition.</p><CameraShot label="Take photo" onShot={async (b) => { const r = await call('/api/driver/photos?kind=vehicle', { raw: b }); setPhoto(r.photoId); setShot(false); }} /></div>;
+  const submit = async () => {
+    try {
+      await call('/api/driver/rides/apply', { body: { seats: Number(f.seats), roadworthyPhotoId: photo, rateCard: { baseCents: cents(f.base), perKmCents: cents(f.perKm), minimumCents: cents(f.minimum), nightCents: cents(f.night), waitPerMinCents: cents(f.wait), cancelCents: cents(f.cancel) } } });
+      onDone();
+    } catch (e) { setErr(explain(e)); }
+  };
+  return (
+    <div style={{ marginTop: 8 }}>
+      {err && <div className="error">{err}</div>}
+      <label>Passenger seats</label><input inputMode="numeric" value={f.seats} onChange={c('seats')} />
+      <button className="secondary block" style={{ marginTop: 8 }} onClick={() => setShot(true)}>{photo ? '✓ Car photo' : 'Car photo'}</button>
+      <div className="row"><div><label>Base $</label><input value={f.base} onChange={c('base')} /></div><div><label>Per km $</label><input value={f.perKm} onChange={c('perKm')} /></div></div>
+      <div className="row"><div><label>Minimum fare $</label><input value={f.minimum} onChange={c('minimum')} /></div><div><label>Night extra $</label><input value={f.night} onChange={c('night')} /></div></div>
+      <div className="row"><div><label>Waiting per minute $</label><input value={f.wait} onChange={c('wait')} /></div><div><label>Cancel / no-show fee $</label><input value={f.cancel} onChange={c('cancel')} /></div></div>
+      <p className="small">The first few minutes of waiting are free. You get the cancel fee if a rider cancels late or doesn't come out.</p>
+      <button className="block" disabled={!photo} onClick={submit}>Send for approval</button>
+    </div>
+  );
+}
+
 function Me({ me, reload }: { me: any; reload: () => void }) {
   const [earn, setEarn] = useState<any[]>([]);
   const [rc, setRc] = useState(me.rateCard);
@@ -462,6 +584,7 @@ function Me({ me, reload }: { me: any; reload: () => void }) {
         <p className="small">{me.deliveries} deliveries · {me.vehicle?.type} {me.vehicle?.plate}</p>
         <p className="small">Monthly fee: {me.fee?.freeUntil && Date.parse(me.fee.freeUntil) > Date.now() ? `free until ${new Date(me.fee.freeUntil).toLocaleDateString('en-GB')}` : me.fee?.paidUntil ? `paid until ${new Date(me.fee.paidUntil).toLocaleDateString('en-GB')}` : money(me.fee?.amountCents)}</p>
       </div>
+      <Services me={me} reload={reload} />
       <div className="card">
         <h3>Earnings</h3>
         {!earn.length ? <p className="small">No deliveries yet.</p> : <table><tbody>{earn.map((d) => <tr key={d.day}><td>{d.day.split('-').reverse().join('/')}</td><td>{d.trips} trips</td><td>{money(d.cents)}</td></tr>)}</tbody></table>}

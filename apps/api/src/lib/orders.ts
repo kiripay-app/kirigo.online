@@ -15,6 +15,8 @@ export interface OrderRow {
   offer_driver_id: string | null; offer_expires_at: string | null;
   assigned_at: string | null; picked_up_at: string | null; handed_over_at: string | null; accepted_at: string | null;
   problem_at: string | null; closed_at: string | null; created_at: string;
+  service: 'delivery' | 'ride'; seats: number; at_pickup_at: string | null; waiting_cents: number; eta_s: number | null;
+  emergency_at: string | null; drop_note: string;
 }
 
 export async function getOrder(db: D1Database, id: string): Promise<OrderRow> {
@@ -150,6 +152,7 @@ async function settleDebts(env: Env, p: OrderRow, available: number): Promise<nu
  */
 export async function settleAccept(env: Env, p: OrderRow, actor: Actor, opts: { shopAtFault: boolean; partialRefund?: number } = { shopAtFault: false }) {
   if (p.parent_order_id) throw new Error('settleAccept on a child order');
+  if (p.service === 'ride') throw new Error('settleAccept on a ride');
   if (p.shop_paid) return;
   const inHold = goodsLeft(p);
   const owedToCustomer = p.discount_cents + (opts.partialRefund ?? 0) + (opts.shopAtFault ? p.delivery_cents : 0);

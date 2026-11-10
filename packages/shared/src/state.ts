@@ -8,7 +8,8 @@ export const TRANSITIONS: Record<OrderStatus, readonly OrderStatus[]> = {
   PAID_HELD: ['DRIVER_ASSIGNED', 'CANCELLED'],
   // back to PAID_HELD = driver dropped the job before pickup; customer re-picks
   DRIVER_ASSIGNED: ['AT_SHOP', 'PAID_HELD', 'CANCELLED'],
-  AT_SHOP: ['PICKED_UP', 'PAID_HELD', 'CANCELLED'],
+  // NOT_DELIVERED from AT_SHOP = a ride passenger who never showed up
+  AT_SHOP: ['PICKED_UP', 'PAID_HELD', 'CANCELLED', 'NOT_DELIVERED'],
   PICKED_UP: ['ARRIVED'],
   ARRIVED: ['HANDED_OVER', 'NOT_DELIVERED'],
   HANDED_OVER: ['ACCEPTED', 'PROBLEM_REPORTED'],
@@ -43,6 +44,20 @@ export const PRE_PICKUP: readonly OrderStatus[] = ['PAID_HELD', 'DRIVER_ASSIGNED
 
 /** Statuses where the driver's GPS is tracked. */
 export const TRACKED: readonly OrderStatus[] = ['DRIVER_ASSIGNED', 'AT_SHOP', 'PICKED_UP', 'ARRIVED'];
+
+export const RIDE_LABEL: Record<OrderStatus, string> = {
+  PAID_HELD: 'Paid, finding your driver',
+  DRIVER_ASSIGNED: 'Driver on the way to you',
+  AT_SHOP: 'Driver has arrived',
+  PICKED_UP: 'On your ride',
+  ARRIVED: 'Arriving',
+  HANDED_OVER: 'Arrived',
+  ACCEPTED: 'Completed',
+  PROBLEM_REPORTED: 'Problem reported',
+  REFUNDED: 'Refunded',
+  NOT_DELIVERED: 'No-show',
+  CANCELLED: 'Cancelled',
+};
 
 export const STATUS_LABEL: Record<OrderStatus, string> = {
   PAID_HELD: 'Paid, held by KiriPay',

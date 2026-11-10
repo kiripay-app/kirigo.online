@@ -7,16 +7,18 @@ const fmt = (iso?: string | null) => (iso ? new Date(Date.parse(iso) + 12 * 3600
 
 function App() {
   const [token] = useState(() => captureToken('admin'));
-  const [tab, setTab] = useState('settings');
+  const [tab, setTab] = useState('alerts');
   if (!token) return (
     <div className="app"><div className="top"><span className="logo">KiriGo Admin</span></div>
       <div className="card"><p>Sign in with your KiriPay admin account (two-step sign-in required).</p><a className="btn block" href="/auth/start?app=admin">Sign in with KiriPay</a></div></div>
   );
-  const tabs: [string, string][] = [['settings', 'Settings'], ['drivers', 'Drivers'], ['problems', 'Problems'], ['orders', 'Orders'], ['flags', 'Ratings'], ['selfies', 'Shift selfies'], ['money', 'Money']];
+  const tabs: [string, string][] = [['alerts', 'Alerts'], ['settings', 'Settings'], ['drivers', 'Drivers'], ['rides', 'Ride approvals'], ['problems', 'Problems'], ['orders', 'Orders'], ['flags', 'Ratings'], ['selfies', 'Shift selfies'], ['money', 'Money']];
   return (
     <div className="app wide">
       <div className="top"><span className="logo">KiriGo Admin</span><button className="secondary" onClick={() => { setToken('admin', null); location.reload(); }}>Sign out</button></div>
       <nav className="tabs">{tabs.map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}</nav>
+      {tab === 'alerts' && <Alerts />}
+      {tab === 'rides' && <RideApprovals />}
       {tab === 'settings' && <Settings />}
       {tab === 'drivers' && <Drivers />}
       {tab === 'problems' && <Problems />}
@@ -60,6 +62,16 @@ const FIELDS: { k: string; label: string; kind: 'cents' | 'num' | 'bool' | 'nigh
   { k: 'adults_only_after', label: 'Adults only after (HH:MM)', kind: 'text' },
   { k: 'retention_photos_days', label: 'Keep proof photos (days)', kind: 'num' },
   { k: 'retention_gps_months', label: 'Keep GPS routes (months)', kind: 'num' },
+  { k: 'rides_open', label: 'Rides open', kind: 'bool' },
+  { k: 'ride_buffer_cents', label: 'Refundable extra held with each ride $', kind: 'cents' },
+  { k: 'ride_free_wait_min', label: 'Free waiting at pickup (minutes)', kind: 'num' },
+  { k: 'ride_free_cancel_min', label: 'Free cancelling after booking (minutes)', kind: 'num' },
+  { k: 'ride_noshow_wait_min', label: 'Wait before a no-show (minutes)', kind: 'num' },
+  { k: 'ride_min_deliveries', label: 'Deliveries needed before rides', kind: 'num' },
+  { k: 'ride_min_rating', label: 'Rating needed before rides', kind: 'num' },
+  { k: 'buddy_after_min', label: 'Trip buddies see the trip after it ends (minutes)', kind: 'num' },
+  { k: 'alert_offroute_m', label: 'Off-route alert distance (m)', kind: 'num' },
+  { k: 'alert_stop_min', label: 'Long-stop alert (minutes)', kind: 'num' },
 ];
 
 function Settings() {
@@ -272,6 +284,64 @@ function Money() {
         {!failed.data?.length ? <p className="muted">None.</p> : <table><tbody>{failed.data.map((m) => <tr key={m.id}><td>{fmt(m.created_at)}</td><td>{m.order_id ?? m.driver_id}</td><td>{m.action} → {m.to_kind}</td><td>{money(m.amount_cents)}</td><td>{m.error}</td></tr>)}</tbody></table>}</div>
       <div className="card"><h3>Shop debts</h3><p className="small">Taken automatically from the shop's next payment.</p>
         {!debts.data?.length ? <p className="muted">None.</p> : <table><tbody>{debts.data.map((d) => <tr key={d.id}><td>{d.shop_id}</td><td>owes {d.creditor_kind}</td><td>{money(d.amount_cents - d.settled_cents)}</td><td>{d.order_id}</td></tr>)}</tbody></table>}</div>
+    </>
+  );
+}
+
+// ------------------------------------------------------------------ alerts and ride approvals
+
+function Alerts() {
+  const { data, err, load } = useLoad<any[]>('/api/admin/alerts');
+  useEffect(() => { const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
+  const handle = async (id: number) => { const note = prompt('What was done?'); if (note) { await call(`/api/admin/alerts/${id}/handle`, { body: { note } }); void load(); } };
+  const label: Record<string, string> = { emergency: 'EMERGENCY', off_route: 'Off route', long_stop: 'Long stop', overtime: 'Running late' };
+  return (
+    <>
+      {err && <div className="error">{err}</div>}
+      {!data?.length && <p className="muted">No open alerts. This page refreshes every 15 seconds.</p>}
+      {data?.map((a) => (
+        <div className="card" key={a.id} style={a.kind === 'emergency' ? { borderColor: 'var(--bad)' } : undefined}>
+          <div className="between"><h3>{label[a.kind] ?? a.kind} · {a.order_id}</h3><span className={`pill ${a.kind === 'emergency' ? 'bad' : 'warn'}`}>{fmt(a.at)}</span></div>
+          <p className="small">Raised by {a.raised_by} · trip {a.status} · rider {a.customer_id} · driver {a.driver_id ?? '—'}</p>
+          <div className="row">
+            {a.lat != null && <a className="btn secondary" href={`https://www.google.com/maps?q=${a.lat},${a.lng}`} target="_blank" rel="noreferrer">Where it happened</a>}
+            <button onClick={() => handle(a.id)}>Mark handled</button>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function RideApprovals() {
+  const [status, setStatus] = useState('pending');
+  const { data, err, load } = useLoad<any[]>(`/api/admin/rides/applications?status=${status}`);
+  const [msg, setMsg] = useState('');
+  const act = async (d: any, action: string, override = false) => {
+    setMsg('');
+    try { await call(`/api/admin/drivers/${d.id}/rides/${action}`, { body: { roadworthyChecked: true, override, note: '' } }); void load(); }
+    catch (e: any) {
+      if (e?.code === 'NOT_ENOUGH_RECORD' && confirm(`${d.first_name} has ${d.deliveries} deliveries and a ${d.rating_avg ?? 'new'} rating, below the usual requirement. Approve anyway?`)) return act(d, action, true);
+      setMsg(explain(e));
+    }
+  };
+  return (
+    <>
+      <nav className="tabs">{['pending', 'approved', 'suspended'].map((s) => <button key={s} className={status === s ? 'on' : ''} onClick={() => setStatus(s)}>{s}</button>)}</nav>
+      {(err || msg) && <div className="error">{err || msg}</div>}
+      {data?.length === 0 && <p className="muted">Nobody here.</p>}
+      {data?.map((d) => (
+        <div className="card" key={d.id}>
+          <div className="between"><h3>{d.first_name} · {d.driver_code}</h3><span className="pill">{d.ride_seats} seats</span></div>
+          <p className="small">{d.vehicle_type} {d.plate} · {d.deliveries} deliveries · rating {d.rating_count >= 5 ? d.rating_avg : 'New'} · fare {money(d.base_cents)} + {money(d.per_km_cents)}/km, min {money(d.minimum_cents)} · waiting {money(d.wait_per_min_cents)}/min · cancel {money(d.cancel_cents)}</p>
+          {d.roadworthyUrl && <img className="shot" src={d.roadworthyUrl} alt="car" />}
+          <div className="row" style={{ marginTop: 8 }}>
+            {status !== 'approved' && <button onClick={() => act(d, 'approve')}>Car checked — approve rides</button>}
+            {status === 'approved' && <button className="danger" onClick={() => act(d, 'suspend')}>Suspend rides</button>}
+            {status === 'pending' && <button className="secondary" onClick={() => act(d, 'reject')}>Reject</button>}
+          </div>
+        </div>
+      ))}
     </>
   );
 }

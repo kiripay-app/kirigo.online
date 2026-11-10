@@ -18,6 +18,12 @@ export function requireKiriPay() {
     if (!c.env.KIRIPAY_SERVICE_KEY || !safeEqual(key, c.env.KIRIPAY_SERVICE_KEY)) throw new ApiError('UNAUTHENTICATED', 401);
     if (!/^[A-Za-z0-9_-]{3,80}$/.test(user)) throw new ApiError('NO_USER', 401);
     c.set('actor', { type: 'customer', id: user });
+    // KiriPay passes the member's first name so a Trip buddy can see whose trip it is
+    const name = (c.req.header('x-kirigo-name') ?? '').slice(0, 40).replace(/[\u0000-\u001f]/g, '').trim();
+    if (name) {
+      c.executionCtx.waitUntil(c.env.DB.prepare('INSERT INTO customers (id, first_name) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET first_name=excluded.first_name WHERE customers.first_name IS NOT excluded.first_name')
+        .bind(user, name).run().catch(() => {}));
+    }
     await next();
   };
 }

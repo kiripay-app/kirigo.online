@@ -87,3 +87,33 @@ export const adminRuling = z.object({
   refundGoodsCents: cents.optional(),
   note: z.string().max(1000).default(''),
 });
+
+export const rideRateCardSchema = z.object({
+  baseCents: cents, perKmCents: cents, minimumCents: cents, nightCents: cents, waitPerMinCents: cents, cancelCents: cents,
+});
+
+export const rideQuoteRequest = z.object({
+  pickup: latLng,
+  dropoff: latLng,
+  seats: z.number().int().min(1).max(12).default(1),
+  sort: z.enum(['closest', 'cheapest', 'top_rated']).default('closest'),
+});
+
+export const createRideRequest = z.object({
+  quoteId: z.string().min(1),
+  driverId: z.string().min(1),
+  fallbackDriverIds: z.array(z.string()).max(10).default([]),
+  holdId: z.string().min(1),
+  pickupNote: z.string().max(200).default(''),
+  dropNote: z.string().max(200).default(''),
+  sharePhone: z.boolean().default(false),
+  /** KiriPay members (from the rider's contacts) to follow this trip */
+  buddies: z.array(z.string().regex(/^[A-Za-z0-9_-]{3,80}$/)).max(5).default([]),
+  sourceRef: z.string().min(6).max(120),
+});
+
+export const rideApplyRequest = z.object({
+  seats: z.number().int().min(1).max(12),
+  roadworthyPhotoId: z.string().min(1),
+  rateCard: rideRateCardSchema,
+});

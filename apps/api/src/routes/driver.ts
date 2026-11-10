@@ -1,4 +1,4 @@
-import { adultsOnly, driverApplyRequest, gpsPoint, handoffRequest, rateCardSchema, rateRequest, validateRateCard } from '@kirigo/shared';
+import { adultsOnly, driverApplyRequest, gpsPoint, handoffRequest, rateCardSchema, rateRequest, rideApplyRequest, rideRateCardSchema, validateRateCard } from '@kirigo/shared';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Actor, AppEnv, Env } from '../env';
@@ -8,6 +8,7 @@ import { nextDriver, pushToDriver } from '../lib/matching';
 import { eventStmt, getOrder, notDelivered, payDriver, transition, type OrderRow } from '../lib/orders';
 import { claimPhoto, savePhoto, type PhotoKind } from '../lib/photos';
 import { submitRatings } from '../lib/ratings';
+import { board, emergency, endRide, noShow, watchRide } from '../lib/rides';
 import { loadSettings } from '../lib/settings';
 import { chargeMonthlyFee, feeStatus } from '../lib/fees';
 import { orderView } from '../lib/views';
@@ -89,6 +90,8 @@ d.get('/me', async (c) => {
     driverId: id, driverCode: row.driver_code, firstName: row.first_name, status: row.status,
     rating: row.rating_count >= 5 ? row.rating_avg : null, ratingCount: row.rating_count, deliveries: row.deliveries,
     vehicle: v, rateCard: rc, online: !!shift, fee: await feeStatus(c.env, row),
+    services: { deliveries: !!row.deliveries_on, rides: !!row.rides_on },
+    rides: { status: row.ride_status, seats: row.ride_seats, rateCard: await c.env.DB.prepare('SELECT * FROM ride_rate_cards WHERE driver_id=?').bind(id).first() },
   });
 });
 
@@ -104,7 +107,7 @@ d.put('/rate-card', async (c) => {
 /** In-app camera photo (raw image body). ?kind=handoff|selfie|problem&order=… */
 d.post('/photos', async (c) => {
   const kind = c.req.query('kind') as PhotoKind;
-  if (!['handoff', 'selfie', 'pickup'].includes(kind)) throw new ApiError('PHOTO_KIND', 422);
+  if (!['handoff', 'selfie', 'pickup', 'vehicle'].includes(kind)) throw new ApiError('PHOTO_KIND', 422);
   const orderId = c.req.query('order') || null;
   if (orderId) await myJob(c, orderId);
   const s = await loadSettings(c.env.DB);
@@ -140,12 +143,12 @@ d.post('/position', async (c) => {
 });
 
 d.get('/offers', async (c) => {
-  const { results } = await c.env.DB.prepare(`SELECT f.id, f.order_id, f.price_cents, f.expires_at, f.kind, o.kind AS order_kind, o.distance_m, o.size,
+  const { results } = await c.env.DB.prepare(`SELECT f.id, f.order_id, f.price_cents, f.expires_at, f.kind, o.kind AS order_kind, o.service, o.seats, o.distance_m, o.size,
       o.pickup_lat, o.pickup_lng, o.drop_lat, o.drop_lng, s.name AS shop_name, cu.rating_avg AS customer_rating, cu.rating_count AS customer_ratings
     FROM offers f JOIN orders o ON o.id=f.order_id JOIN shops s ON s.id=o.shop_id LEFT JOIN customers cu ON cu.id=o.customer_id
     WHERE f.driver_id=? AND f.result IS NULL AND f.expires_at > ?`).bind(meId(c), nowIso()).all<any>();
   return c.json((results ?? []).map((r) => ({
-    offerId: r.id, orderId: r.order_id, kind: r.order_kind, priceCents: r.price_cents, expiresAt: r.expires_at, distanceM: r.distance_m, size: r.size,
+    offerId: r.id, orderId: r.order_id, kind: r.service === 'ride' ? 'ride' : r.order_kind, seats: r.seats, priceCents: r.price_cents, expiresAt: r.expires_at, distanceM: r.distance_m, size: r.size,
     shop: r.shop_name, pickupArea: { lat: Math.round(r.pickup_lat * 100) / 100, lng: Math.round(r.pickup_lng * 100) / 100 },
     dropArea: { lat: Math.round(r.drop_lat * 100) / 100, lng: Math.round(r.drop_lng * 100) / 100 },
     customerRating: r.customer_ratings >= 5 ? r.customer_rating : 'New',
@@ -195,6 +198,7 @@ d.post('/jobs/:id/gps', async (c) => {
   await stub.fetch('https://do/gps', { method: 'POST', body: JSON.stringify({ orderId: o.id, driverId: meId(c), points: b.points }) });
   const last = b.points.at(-1)!;
   await presence(c.env, 'position', { driverId: meId(c), lat: last.lat, lng: last.lng });
+  if (o.service === 'ride') await watchRide(c.env, o, last);
   return c.json({ ok: true });
 });
 
@@ -202,7 +206,14 @@ d.post('/jobs/:id/status', async (c) => {
   const o = await myJob(c, c.req.param('id'));
   const b = await body(c, z.object({ status: z.enum(['at_pickup', 'picked_up', 'arrived']), lat: z.number(), lng: z.number(), code: z.string().optional(), token: z.string().optional() }));
   const at = { lat: b.lat, lng: b.lng };
-  if (b.status === 'at_pickup') return c.json(await orderView(c.env, await transition(c.env, o, 'AT_SHOP', c.get('actor'), { at }), c.get('actor')));
+  if (b.status === 'at_pickup') return c.json(await orderView(c.env, await transition(c.env, o, 'AT_SHOP', c.get('actor'), { at, set: o.service === 'ride' ? { at_pickup_at: nowIso() } : {} }), c.get('actor')));
+  if (b.status === 'picked_up' && o.service === 'ride') {
+    // the rider boards: they show their boarding code
+    if (b.code && !b.token && !(await takeAttempt(c.env.DB, `board:${o.id}`, 5, 3600_000))) throw new ApiError('TOO_MANY_TRIES', 429);
+    const ok = await checkHandoff(c.env, o.id, { code: b.code, token: b.token });
+    if (!ok.ok) throw new ApiError('HANDOFF_CODE_WRONG', 422, { reason: ok.reason });
+    return c.json(await orderView(c.env, await board(c.env, o, c.get('actor'), at), c.get('actor')));
+  }
   if (b.status === 'picked_up') {
     // collecting a return from the customer: they show their code, like a handoff in reverse
     if (o.kind === 'return') {
@@ -263,6 +274,7 @@ async function doHandoff(env: Env, actor: Actor, o: OrderRow, b: HandoffInput, o
 
 d.post('/jobs/:id/handoff', async (c) => {
   const o = await myJob(c, c.req.param('id'));
+  if (o.service === 'ride') throw new ApiError('USE_END_RIDE', 409);
   const b = await body(c, handoffRequest);
   return c.json(await orderView(c.env, await doHandoff(c.env, c.get('actor'), o, b, false), c.get('actor')));
 });
@@ -330,6 +342,71 @@ d.post('/fee/pay', async (c) => {
 });
 
 d.get('/ws-ticket', async (c) => c.json({ ticket: await trackTicket(c.env, 'driver', meId(c)), ws: '/ws/driver' }));
+
+// ------------------------------------------------------------------ rides (driver side)
+
+/** What this driver does: deliveries, rides, or both. Only while offline. */
+d.put('/services', async (c) => {
+  const b = await body(c, z.object({ deliveries: z.boolean(), rides: z.boolean() }));
+  const row = await c.env.DB.prepare('SELECT ride_status FROM drivers WHERE id=?').bind(meId(c)).first<{ ride_status: string }>();
+  if (b.rides && row?.ride_status !== 'approved') throw new ApiError('RIDES_NOT_APPROVED', 403);
+  if (!b.deliveries && !b.rides) throw new ApiError('PICK_AT_LEAST_ONE', 422);
+  const online = await c.env.DB.prepare('SELECT 1 FROM shifts WHERE driver_id=? AND offline_at IS NULL').bind(meId(c)).first();
+  if (online) throw new ApiError('GO_OFFLINE_FIRST', 409);
+  await c.env.DB.prepare('UPDATE drivers SET deliveries_on=?, rides_on=? WHERE id=?').bind(b.deliveries ? 1 : 0, b.rides ? 1 : 0, meId(c)).run();
+  return c.json({ ok: true });
+});
+
+/** Ask to carry passengers: seats, a roadworthiness photo of the car, ride prices. Admin approves. */
+d.post('/rides/apply', async (c) => {
+  const b = await body(c, rideApplyRequest);
+  const v = await c.env.DB.prepare('SELECT type FROM vehicles WHERE driver_id=? AND active=1').bind(meId(c)).first<{ type: string }>();
+  if (!v || !['car', 'van'].includes(v.type)) throw new ApiError('RIDES_NEED_A_CAR', 422);
+  await claimPhoto(c.env, b.roadworthyPhotoId, 'vehicle', null, c.get('actor'));
+  const rc = b.rateCard;
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE drivers SET ride_status=CASE WHEN ride_status='approved' THEN 'approved' ELSE 'pending' END, ride_seats=?, roadworthy_photo_id=? WHERE id=?").bind(b.seats, b.roadworthyPhotoId, meId(c)),
+    c.env.DB.prepare(`INSERT INTO ride_rate_cards (driver_id, base_cents, per_km_cents, minimum_cents, night_cents, wait_per_min_cents, cancel_cents) VALUES (?,?,?,?,?,?,?)
+      ON CONFLICT(driver_id) DO UPDATE SET base_cents=excluded.base_cents, per_km_cents=excluded.per_km_cents, minimum_cents=excluded.minimum_cents,
+      night_cents=excluded.night_cents, wait_per_min_cents=excluded.wait_per_min_cents, cancel_cents=excluded.cancel_cents, updated_at=excluded.updated_at`)
+      .bind(meId(c), rc.baseCents, rc.perKmCents, rc.minimumCents, rc.nightCents, rc.waitPerMinCents, rc.cancelCents),
+  ]);
+  return c.json({ ok: true });
+});
+
+d.put('/rides/rate-card', async (c) => {
+  const rc = await body(c, rideRateCardSchema);
+  const online = await c.env.DB.prepare('SELECT 1 FROM shifts WHERE driver_id=? AND offline_at IS NULL').bind(meId(c)).first();
+  if (online) throw new ApiError('GO_OFFLINE_FIRST', 409);
+  const r = await c.env.DB.prepare('UPDATE ride_rate_cards SET base_cents=?, per_km_cents=?, minimum_cents=?, night_cents=?, wait_per_min_cents=?, cancel_cents=?, updated_at=? WHERE driver_id=?')
+    .bind(rc.baseCents, rc.perKmCents, rc.minimumCents, rc.nightCents, rc.waitPerMinCents, rc.cancelCents, nowIso(), meId(c)).run();
+  if (!r.meta.changes) throw new ApiError('APPLY_FOR_RIDES_FIRST', 409);
+  return c.json({ ok: true });
+});
+
+/** Drop-off: ends the ride and pays the driver. */
+d.post('/jobs/:id/end-ride', async (c) => {
+  const o = await myJob(c, c.req.param('id'));
+  if (o.service !== 'ride') throw new ApiError('NOT_A_RIDE', 409);
+  const b = await body(c, z.object({ lat: z.number(), lng: z.number() }));
+  return c.json(await orderView(c.env, await endRide(c.env, o, c.get('actor'), b), c.get('actor')));
+});
+
+/** The rider never came out: after the wait, the driver gets the cancellation fee. */
+d.post('/jobs/:id/no-show', async (c) => {
+  const o = await myJob(c, c.req.param('id'));
+  if (o.service !== 'ride') throw new ApiError('NOT_A_RIDE', 409);
+  const b = await body(c, z.object({ lat: z.number(), lng: z.number() }));
+  return c.json(await orderView(c.env, await noShow(c.env, o, c.get('actor'), b), c.get('actor')));
+});
+
+/** Emergency button (driver). */
+d.post('/jobs/:id/emergency', async (c) => {
+  const o = await myJob(c, c.req.param('id'));
+  const b = await body(c, z.object({ lat: z.number().optional(), lng: z.number().optional() }));
+  await emergency(c.env, o, 'driver', b.lat != null && b.lng != null ? { lat: b.lat, lng: b.lng } : null);
+  return c.json({ ok: true });
+});
 
 driver.route('/', d);
 

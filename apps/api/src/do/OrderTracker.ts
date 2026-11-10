@@ -13,6 +13,11 @@ export class OrderTracker extends DurableObject<Env> {
     const url = new URL(req.url);
     const op = url.pathname.slice(1);
 
+    if (op === 'last') {
+      const last = await this.ctx.storage.get<{ orderId: string; point: Point }>('last');
+      return Response.json(last ?? null);
+    }
+
     if (op === 'socket') {
       const who = url.searchParams.get('who') ?? 'viewer';
       const pair = new WebSocketPair();

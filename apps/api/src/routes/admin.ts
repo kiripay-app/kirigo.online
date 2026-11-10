@@ -161,6 +161,46 @@ admin.get('/money/failed', async (c) => {
   return c.json(results ?? []);
 });
 
+/** Approve a driver for rides. Needs the delivery record set in settings (default 20 deliveries, 4.3 rating) unless overridden. */
+admin.post('/drivers/:id/rides/:action{approve|suspend|reject}', async (c) => {
+  const b = await body(c, z.object({ roadworthyChecked: z.boolean().default(false), override: z.boolean().default(false), note: z.string().max(300).default('') }));
+  const id = c.req.param('id');
+  const d = await c.env.DB.prepare('SELECT * FROM drivers WHERE id=?').bind(id).first<any>();
+  if (!d) throw new ApiError('NOT_FOUND', 404);
+  const action = c.req.param('action');
+  if (action === 'approve') {
+    if (d.status !== 'approved') throw new ApiError('APPROVE_AS_DRIVER_FIRST', 409);
+    if (!b.roadworthyChecked) throw new ApiError('CHECK_THE_CAR', 422);
+    const s = await loadSettings(c.env.DB);
+    const record = d.deliveries >= s.ride_min_deliveries && (d.rating_count < 5 ? s.ride_min_rating <= 0 : d.rating_avg >= s.ride_min_rating);
+    if (!record && !b.override) throw new ApiError('NOT_ENOUGH_RECORD', 422, { deliveries: d.deliveries, rating: d.rating_avg, need: { deliveries: s.ride_min_deliveries, rating: s.ride_min_rating } });
+  }
+  const status = action === 'approve' ? 'approved' : action === 'suspend' ? 'suspended' : 'rejected';
+  await c.env.DB.prepare(`UPDATE drivers SET ride_status=?, ride_approved_by=?, ride_approved_at=?, rides_on=CASE WHEN ?='approved' THEN rides_on ELSE 0 END, review_note=COALESCE(NULLIF(?, ''), review_note) WHERE id=?`)
+    .bind(status, who(c), nowIso(), status, b.note, id).run();
+  return c.json({ ok: true });
+});
+
+admin.get('/rides/applications', async (c) => {
+  const { results } = await c.env.DB.prepare(`SELECT d.*, v.type AS vehicle_type, v.plate, r.base_cents, r.per_km_cents, r.minimum_cents, r.wait_per_min_cents, r.cancel_cents
+    FROM drivers d JOIN ride_rate_cards r ON r.driver_id=d.id LEFT JOIN vehicles v ON v.driver_id=d.id AND v.active=1 WHERE d.ride_status=? ORDER BY d.created_at`).bind(c.req.query('status') ?? 'pending').all<any>();
+  return c.json(await Promise.all((results ?? []).map(async (d) => ({ ...d, roadworthyUrl: d.roadworthy_photo_id ? await photoUrl(c.env, d.roadworthy_photo_id) : null }))));
+});
+
+/** Emergencies and trip alerts not yet handled, emergencies first, with the trip and its live state. */
+admin.get('/alerts', async (c) => {
+  const { results } = await c.env.DB.prepare(`SELECT a.*, o.status, o.customer_id, o.driver_id, o.pickup_lat, o.pickup_lng, o.drop_lat, o.drop_lng
+    FROM trip_alerts a JOIN orders o ON o.id=a.order_id WHERE a.handled_at IS NULL
+    ORDER BY CASE a.kind WHEN 'emergency' THEN 0 ELSE 1 END, a.id DESC LIMIT 100`).all<any>();
+  return c.json(results ?? []);
+});
+
+admin.post('/alerts/:id/handle', async (c) => {
+  const b = await body(c, z.object({ note: z.string().min(2).max(500) }));
+  await c.env.DB.prepare('UPDATE trip_alerts SET handled_by=?, handled_at=?, note=? WHERE id=? AND handled_at IS NULL').bind(who(c), nowIso(), b.note, c.req.param('id')).run();
+  return c.json({ ok: true });
+});
+
 admin.get('/debts', async (c) => {
   const { results } = await c.env.DB.prepare('SELECT * FROM shop_debts WHERE settled_cents < amount_cents ORDER BY created_at').all();
   return c.json(results ?? []);

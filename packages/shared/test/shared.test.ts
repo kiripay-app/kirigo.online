@@ -133,3 +133,18 @@ describe('ratings', () => {
     expect(addToAverage(4, 1, 2)).toEqual({ avg: 3, count: 2 });
   });
 });
+
+describe('ride pricing', () => {
+  const rrc = { baseCents: 300, perKmCents: 150, minimumCents: 500, nightCents: 100, waitPerMinCents: 50, cancelCents: 300 };
+  it('fixed fare with minimum and night extra', async () => {
+    const { priceRide } = await import('../src');
+    expect(priceRide(rrc, 1000, false, { max_per_km_cents: null, floor_minimum_cents: null })).toBe(500);
+    expect(priceRide(rrc, 4000, true, { max_per_km_cents: null, floor_minimum_cents: null })).toBe(300 + 600 + 100);
+  });
+  it('waiting: free minutes, per minute, capped by the buffer', async () => {
+    const { waitingCharge } = await import('../src');
+    expect(waitingCharge(0, 2 * 60_000, 3, 50, 500)).toBe(0);
+    expect(waitingCharge(0, 6 * 60_000, 3, 50, 500)).toBe(150);
+    expect(waitingCharge(0, 60 * 60_000, 3, 50, 500)).toBe(500);
+  });
+});
