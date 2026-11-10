@@ -34,6 +34,8 @@ member.post('/apply', async (c) => {
   const st = await loadSettings(c.env.DB);
   if (!st.driver_signup_open) throw new ApiError('SIGNUP_CLOSED', 503);
   if (!s.mfa) throw new ApiError('TWO_STEP_REQUIRED', 403);
+  // drivers must have had their ID checked in KiriPay first (level 2: passport or licence + selfie)
+  if ((s.kyc ?? 1) < 2) throw new ApiError('ID_CHECK_REQUIRED', 403);
   const b = await body(c, driverApplyRequest);
   const errs = validateRateCard(b.rateCard);
   if (errs.length) throw new ApiError('RATE_CARD_INVALID', 422, { errs });

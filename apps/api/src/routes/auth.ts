@@ -39,9 +39,9 @@ auth.get('/callback', async (c) => {
     body: JSON.stringify({ code }), signal: AbortSignal.timeout(8000),
   });
   if (!res.ok) throw new ApiError('SIGN_IN_FAILED', 401);
-  const who = await res.json() as { userId: string; firstName: string; mfa: boolean; adminRole: string | null };
+  const who = await res.json() as { userId: string; firstName: string; mfa: boolean; adminRole: string | null; kycTier?: number };
   const drv = await c.env.DB.prepare('SELECT id FROM drivers WHERE kiripay_user_id=?').bind(who.userId).first<{ id: string }>();
-  const token = await signSession(c.env, { sub: who.userId, name: who.firstName, mfa: !!who.mfa, adm: who.adminRole, drv: drv?.id ?? null });
+  const token = await signSession(c.env, { sub: who.userId, name: who.firstName, mfa: !!who.mfa, adm: who.adminRole, drv: drv?.id ?? null, kyc: Number(who.kycTier ?? 1) });
   // the token goes in the fragment so it never reaches a server log
   return c.redirect(`/${st.return_to}/#token=${encodeURIComponent(token)}`, 302);
 });
@@ -51,6 +51,6 @@ auth.get('/dev', async (c) => {
   if (c.env.KIRIPAY_MODE !== 'mock' || c.env.APP_ENV === 'production') throw new ApiError('NOT_FOUND', 404);
   const user = c.req.query('user') ?? 'u_dev';
   const drv = await c.env.DB.prepare('SELECT id FROM drivers WHERE kiripay_user_id=?').bind(user).first<{ id: string }>();
-  const token = await signSession(c.env, { sub: user, name: c.req.query('name') ?? 'Dev', mfa: true, adm: c.req.query('admin') ? 'super' : null, drv: drv?.id ?? null });
+  const token = await signSession(c.env, { sub: user, name: c.req.query('name') ?? 'Dev', mfa: true, adm: c.req.query('admin') ? 'super' : null, drv: drv?.id ?? null, kyc: Number(c.req.query('kyc') ?? 2) });
   return c.json({ token });
 });

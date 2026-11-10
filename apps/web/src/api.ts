@@ -65,8 +65,17 @@ const MESSAGES: Record<string, string> = {
   WAIT_A_LITTLE_LONGER: 'Please wait a few minutes at the door before marking it not delivered.',
   SET_THESE_FIRST: 'Set the launch settings first.',
   SIGNUP_CLOSED: 'Driver sign-up is closed right now.',
+  ID_CHECK_REQUIRED: 'Your ID needs to be approved in KiriPay first (Verify your account → Level 2).',
 };
 export const explain = (e: unknown) => {
   if (e instanceof ApiError) return MESSAGES[e.code] ?? e.code.replace(/_/g, ' ').toLowerCase();
   return String(e);
 };
+
+/** Read (not verify) the session's claims, to show the right screen. The server checks them properly. */
+export function sessionClaims(app: 'driver' | 'admin'): Record<string, any> {
+  try {
+    const t = localStorage.getItem(`kirigo.${app}.token`) ?? '';
+    return JSON.parse(atob(t.split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/')));
+  } catch { return {}; }
+}

@@ -1,0 +1,122 @@
+diff -ruN a/docs/kirigo-drivers.md b/docs/kirigo-drivers.md
+--- a/docs/kirigo-drivers.md	1970-01-01 12:00:00.000000000 +1200
++++ b/docs/kirigo-drivers.md	2026-11-11 01:26:50.370223538 +1200
+@@ -0,0 +1,58 @@
++# Drive with KiriGo: getting your KiriPay account ready
++
++KiriGo is the KiriPay delivery service. Drivers are paid straight into their KiriPay wallet, so every KiriGo driver needs a KiriPay account first, with their ID checked. This page walks you through it from the start. Most people finish in one sitting; the ID check then takes about a day.
++
++> You'll need: a phone with a camera, an email address, your **passport or driver's licence**, and — if you'll drive a motorbike, car, van or truck — your **driver's licence**.
++
++## 1. Get KiriPay and create your account
++
++Install KiriPay from the [download page](/download), or open **kiripay.online** in your browser. Tap **Create an account** and enter your name exactly as it is on your ID, your email, your mobile number and a password.
++
++## 2. Confirm your email or mobile number
++
++Open the email from KiriPay and tap the confirm link (or confirm your mobile number with the 6-digit text). Until you do, KiriPay can't send, pay or check your ID.
++
++## 3. Get your ID checked (Level 2)
++
++This is the step KiriGo needs. In KiriPay open **Verify your account**, then choose **Level 2: your ID**.
++
++1. Choose your document: **Passport** or **Driving licence**. If you'll drive a motor vehicle, use your driver's licence — KiriGo checks it anyway, so one document does both jobs.
++2. Type your full name, document number, date of birth and expiry date exactly as they appear on the document.
++3. Take a clear photo of the document: the passport photo page, or the front of the licence (and the back too if it has anything written on it).
++4. Take a selfie: face the camera, in good light, no hat or sunglasses.
++5. Tap **Send**. You'll get an email when it has been checked, usually within a day.
++
++Your document must not be expired. If it comes back **Not approved**, the reason is shown on the same page — fix it and send again.
++
++## 4. Turn on two-step sign-in
++
++Drivers receive money, so KiriGo asks for the extra lock. Install an authenticator app (Google Authenticator, Microsoft Authenticator, Authy or 1Password). In KiriPay open **Security → Two-step sign-in → Set up two-step sign-in**, scan the code with the authenticator app, and type the 6-digit number it shows. Save your recovery codes somewhere safe.
++
++## 5. Set an app PIN
++
++While you're in **Security**, set a 4 to 6 digit **App PIN**. KiriPay then asks for it whenever it opens, so nobody else can use your wallet if your phone is lost.
++
++## 6. Sign up on KiriGo
++
++Once your ID shows **Approved**, go to **[kirigo.online/driver](https://kirigo.online/driver/)** and tap **Sign in with KiriPay**. KiriGo never sees your password. Then fill in:
++
++- your first name (customers see this),
++- your vehicle and plate number, with a photo showing the plate,
++- a photo of your driver's licence (for any motor vehicle),
++- your prices: a base fee, a price per km, and your minimum charge.
++
++An admin checks that your licence matches the photo on your KiriPay ID. When you're approved you get a driver number like **KG-0142** and can go online. Each time you go online, KiriGo asks for a quick selfie so nobody else can drive on your account.
++
++## Getting paid
++
++You keep **100% of every delivery charge**. It lands in your KiriPay wallet the moment you hand an order over and the customer's code is scanned. Cash it out to your bank like any other KiriPay money, from **Top up or cash out**. KiriGo charges a small monthly fee from your wallet; the first 3 months are free.
++
++## If something is stuck
++
++| What you see | What to do |
++|---|---|
++| KiriGo says your ID needs to be approved | Finish step 3 and wait for the approval email, then sign in to KiriGo again. |
++| KiriGo asks for two-step sign-in | Finish step 4, then sign in to KiriGo again. |
++| Your ID came back Not approved | Read the reason on **Verify your account**, retake the photo or fix the details, and send again. |
++| You can't confirm your email | Check your spam folder, or confirm your mobile number instead. |
++| Anything else | Open **Support** in KiriPay and send us a message. |
+diff -ruN a/src/App.tsx b/src/App.tsx
+--- a/src/App.tsx	2026-11-11 01:26:02.916839805 +1200
++++ b/src/App.tsx	2026-11-11 01:26:56.884327355 +1200
+@@ -44,6 +44,7 @@
+ const AdminMerchantGuide = lazy(() => import("./pages/Public").then((m) => ({ default: m.AdminMerchantGuide })));
+ const DevDocs = lazy(() => import("./pages/Public").then((m) => ({ default: m.DevDocs })));
+ const Help = lazy(() => import("./pages/Public").then((m) => ({ default: m.Help })));
++const KiriGoDrivers = lazy(() => import("./pages/Public").then((m) => ({ default: m.KiriGoDrivers })));
+ const MerchantGuide = lazy(() => import("./pages/Public").then((m) => ({ default: m.MerchantGuide })));
+ const Merchants = lazy(() => import("./pages/Public").then((m) => ({ default: m.Merchants })));
+ const Market = lazy(() => import("./pages/Market"));
+@@ -104,6 +105,7 @@
+       <Route path="/reset" element={<Reset />} />
+       <Route path="/verify" element={<VerifyEmail />} />
+       <Route path="/help" element={<Help />} />
++      <Route path="/kirigo" element={<KiriGoDrivers />} />
+       <Route path="/faq" element={<FaqPage />} />
+       <Route path="/privacy" element={<PrivacyPage />} />
+       <Route path="/delete-account" element={<DeleteAccountPage />} />
+diff -ruN a/src/pages/Public.tsx b/src/pages/Public.tsx
+--- a/src/pages/Public.tsx	2026-11-11 01:26:02.918209810 +1200
++++ b/src/pages/Public.tsx	2026-11-11 01:26:56.884025362 +1200
+@@ -11,6 +11,7 @@
+ import guideMd from "../../docs/merchant-guide.md?raw";
+ import adminMd from "../../docs/admin-merchants.md?raw";
+ import helpMd from "../../docs/how-kiripay-works.md?raw";
++import driversMd from "../../docs/kirigo-drivers.md?raw";
+ 
+ // ---------- pages anyone can open (no sign-in): merchant landing and developer docs ----------
+ export function PublicLayout({ children, wide = false }: { children: ReactNode; wide?: boolean }) {
+@@ -27,6 +28,7 @@
+           <NavLink to="/merchants" end>Sell online</NavLink>
+           <NavLink to="/merchants/guide">Setup guide</NavLink>
+           <NavLink to="/developers">Developers</NavLink>
++          <NavLink to="/kirigo">Drive with KiriGo</NavLink>
+         </nav>
+         <div className="row" style={{ gap: 8 }}>
+           {/* signed in and reached this page from inside the app (Help, footer links, etc): give a way back
+@@ -175,3 +177,5 @@
+ export function MerchantGuide() { return <PublicLayout wide><Md src={guideMd} /></PublicLayout>; }
+ export function AdminMerchantGuide() { return <div className="stack"><Md src={adminMd} /></div>; }
+ export function Help() { return <PublicLayout wide><Md src={helpMd} /></PublicLayout>; }
++/** Public: how to get a KiriPay account ready to drive with KiriGo (ID check, two-step, PIN), then sign up on kirigo.online */
++export function KiriGoDrivers() { return <PublicLayout wide><Md src={driversMd} /></PublicLayout>; }
+diff -ruN a/worker/kirigo.ts b/worker/kirigo.ts
+--- a/worker/kirigo.ts	2026-11-11 01:26:02.919765701 +1200
++++ b/worker/kirigo.ts	2026-11-11 01:26:16.228964476 +1200
+@@ -194,9 +194,10 @@
+     if (!row || row.used_at || Date.parse(row.created_at) < Date.now() - 5 * 60_000) return c.json({ error: "BAD_CODE" }, 400);
+     const used = await c.env.DB.prepare("UPDATE kirigo_auth_codes SET used_at=? WHERE code_hash=? AND used_at IS NULL").bind(now(), h).run();
+     if (!used.meta.changes) return c.json({ error: "BAD_CODE" }, 400);
+-    const u = await c.env.DB.prepare("SELECT id, name, admin_role, status FROM users WHERE id=? AND deleted_at IS NULL").bind(row.user_id).first<any>();
++    const u = await c.env.DB.prepare("SELECT id, name, admin_role, status, kyc_tier FROM users WHERE id=? AND deleted_at IS NULL").bind(row.user_id).first<any>();
+     if (!u || u.status !== "active") return c.json({ error: "BAD_CODE" }, 400);
+-    return c.json({ userId: u.id, firstName: String(u.name ?? "").split(" ")[0], mfa: !!row.mfa, adminRole: u.admin_role ?? null });
++    // kycTier: KiriGo only accepts drivers whose ID has been checked here (level 2 or above)
++    return c.json({ userId: u.id, firstName: String(u.name ?? "").split(" ")[0], mfa: !!row.mfa, adminRole: u.admin_role ?? null, kycTier: Number(u.kyc_tier ?? 1) });
+   });
+ 
+   app.get("/api/internal/escrow/holds/:id", async (c) => {

@@ -1,7 +1,7 @@
 import { adultsOnly } from '@kirigo/shared';
 import { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ApiError, captureToken, client, explain, money, setToken } from '../api';
+import { ApiError, captureToken, client, explain, money, sessionClaims, setToken } from '../api';
 import { CameraShot, QrScan } from './camera';
 import { addPending, checkQrOffline, pending, refreshKey, syncPending, toDataUrl } from './offline';
 
@@ -43,7 +43,11 @@ function App() {
 
   if (state === 'signin') return <SignIn />;
   if (state === 'loading') return <div className="app"><p>Loading…</p></div>;
-  if (state === 'apply') return <Apply onDone={(t) => { setToken('driver', t); location.reload(); }} />;
+  if (state === 'apply') {
+    const claims = sessionClaims('driver');
+    if (!claims.mfa || (claims.kyc ?? 1) < 2) return <GetReady twoStep={!!claims.mfa} idOk={(claims.kyc ?? 1) >= 2} />;
+    return <Apply onDone={(t) => { setToken('driver', t); location.reload(); }} />;
+  }
   if (!me) return <div className="app">{err && <div className="error">{err}</div>}<button onClick={load}>Try again</button></div>;
   if (me.status === 'pending') return <Pending me={me} />;
   if (me.status !== 'approved') return <div className="app"><Top /><div className="error">Your driver account is {me.status}. Contact KiriGo support.</div></div>;
@@ -68,6 +72,26 @@ function SignIn() {
 }
 
 // ------------------------------------------------------------------ sign-up
+
+/** Before the form: KiriPay must have checked their ID, and two-step sign-in must be on. */
+function GetReady({ twoStep, idOk }: { twoStep: boolean; idOk: boolean }) {
+  const again = () => { setToken('driver', null); location.href = '/auth/start?app=driver'; };
+  return (
+    <div className="app">
+      <Top />
+      <h2>Get your KiriPay account ready</h2>
+      <p>Before you can sign up to drive, finish these in the KiriPay app. It takes a day or so for your ID to be checked.</p>
+      <div className="card">
+        <div className="between"><b>Your ID checked (Level 2)</b><span className={`pill ${idOk ? 'good' : 'warn'}`}>{idOk ? 'Done' : 'To do'}</span></div>
+        <p className="small">In KiriPay open Verify your account, choose Level 2 and send a photo of your passport or driver's licence plus a selfie.</p>
+        <div className="between" style={{ marginTop: 12 }}><b>Two-step sign-in</b><span className={`pill ${twoStep ? 'good' : 'warn'}`}>{twoStep ? 'Done' : 'To do'}</span></div>
+        <p className="small">In KiriPay open Security and set up two-step sign-in with an authenticator app.</p>
+      </div>
+      <a className="btn block" href="https://kiripay.online/kirigo">Step-by-step guide</a>
+      <button className="secondary block" style={{ marginTop: 8 }} onClick={again}>I've done both — check again</button>
+    </div>
+  );
+}
 
 function Apply({ onDone }: { onDone: (token: string) => void }) {
   const [f, setF] = useState({ firstName: '', type: 'motorbike', plate: '', canBulky: false, base: '2.00', perKm: '1.00', minimum: '3.00', night: '0', bulky: '0', terms: false });

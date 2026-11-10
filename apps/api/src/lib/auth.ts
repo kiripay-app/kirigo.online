@@ -38,6 +38,7 @@ export interface SessionClaims {
   mfa: boolean;         // two-step sign-in done in KiriPay
   adm: string | null;   // KiriPay admin role, if any
   drv: string | null;   // KiriGo driver id, if they have applied
+  kyc: number;          // KiriPay ID-check level (2+ = ID approved)
 }
 
 const key = (env: Env) => new TextEncoder().encode(env.SESSION_SECRET);
