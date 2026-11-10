@@ -1,0 +1,90 @@
+/* KiriGo public page. Ocean ink on lagoon light; sun orange from the family icon is the one loud colour. */
+:root {
+  --ocean: #0B3954;
+  --lagoon: #E6F4F1;
+  --reef: #12867A;
+  --sun: #F59F00;
+  --sunset: #E8590C;
+  --white: #FFFFFF;
+  --ink-soft: #3E5C6E;
+  --display: "Bricolage Grotesque", system-ui, sans-serif;
+  --body: "Atkinson Hyperlegible", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--lagoon); color: var(--ocean); font: 18px/1.6 var(--body); }
+a { color: var(--sunset); }
+a:focus-visible, .button:focus-visible { outline: 3px solid var(--sun); outline-offset: 3px; border-radius: 6px; }
+img { display: block; }
+
+.bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; max-width: 1180px; margin: 0 auto; padding: 18px 24px; }
+.brand { display: flex; align-items: center; gap: 10px; color: var(--ocean); text-decoration: none; font: 800 26px/1 var(--display); letter-spacing: -0.02em; }
+.bar nav { display: flex; align-items: center; gap: 22px; }
+.bar nav a { color: var(--ocean); text-decoration: none; font-weight: 700; font-size: 16px; }
+.bar nav a:hover { color: var(--sunset); }
+.nav-cta { background: var(--ocean); color: var(--white) !important; padding: 9px 16px; border-radius: 999px; }
+.nav-cta:hover { background: var(--sunset); }
+
+main { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+
+.hero { display: grid; grid-template-columns: 1fr 1.05fr; gap: 40px; align-items: center; padding: 40px 0 72px; }
+.hero h1 { font: 800 clamp(40px, 5.6vw, 72px)/1.02 var(--display); letter-spacing: -0.035em; margin: 0 0 22px; max-width: 14ch; }
+.lede { font-size: 20px; color: var(--ink-soft); max-width: 34em; margin: 0 0 16px; }
+.hero-note { font-size: 15px; color: var(--reef); font-weight: 700; margin: 0; }
+
+.route { margin: 0; background: var(--ocean); border-radius: 28px; padding: 18px 18px 14px; }
+.route svg { width: 100%; height: auto; display: block; overflow: visible; }
+.route figcaption { color: #9CC3CF; font-size: 14px; padding: 4px 8px 2px; }
+.reef { fill: none; stroke: #1E5A78; stroke-width: 26; stroke-linecap: round; }
+.road { fill: none; stroke: #6FA7BA; stroke-width: 3; stroke-dasharray: 2 9; stroke-linecap: round; }
+.trip { fill: none; stroke: var(--sun); stroke-width: 5; stroke-linecap: round; stroke-dasharray: 520; stroke-dashoffset: 520; animation: draw 4.5s cubic-bezier(.45,0,.25,1) .6s forwards; }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+.place circle { fill: #6FA7BA; }
+.place text { fill: #9CC3CF; font: 600 19px var(--display); }
+.water { fill: #2C6B88; font: 600 italic 22px var(--display); letter-spacing: 0.02em; }
+.pin circle { stroke: var(--ocean); stroke-width: 4; }
+.pin.shop circle { fill: var(--white); }
+.pin.home circle { fill: var(--sun); }
+.pin text { fill: var(--white); font: 700 21px var(--body); }
+.rider circle { fill: var(--sunset); stroke: var(--white); stroke-width: 3; }
+.rider text { fill: var(--white); font: 800 16px var(--display); }
+
+.how { padding: 24px 0 72px; }
+.how h2, .shops h2, .drive h2 { font: 800 clamp(30px, 3.4vw, 44px)/1.08 var(--display); letter-spacing: -0.025em; margin: 0 0 28px; }
+.steps { list-style: none; counter-reset: s; display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; margin: 0; padding: 0; border-top: 3px solid var(--ocean); }
+.steps li { counter-increment: s; padding: 20px 22px 8px 0; position: relative; }
+.steps li::before { content: counter(s); font: 800 44px/1 var(--display); color: var(--sun); display: block; margin-bottom: 10px; }
+.steps h3 { font: 800 21px/1.2 var(--display); margin: 0 0 8px; }
+.steps p { margin: 0; color: var(--ink-soft); font-size: 17px; }
+.aside { margin: 28px 0 0; padding-left: 16px; border-left: 4px solid var(--reef); color: var(--ocean); max-width: 46em; }
+
+.drive { display: grid; grid-template-columns: 1fr 1.2fr; gap: 48px; align-items: center; background: var(--ocean); color: var(--white); border-radius: 32px; padding: 56px; margin-bottom: 72px; }
+.drive-figure { display: flex; flex-direction: column; }
+.pct { font: 800 clamp(96px, 14vw, 180px)/0.85 var(--display); letter-spacing: -0.05em; color: var(--sun); }
+.pct-label { font: 700 22px/1.3 var(--display); margin-top: 14px; max-width: 12em; }
+.drive p { color: #CFE3EA; max-width: 34em; }
+.drive .small { font-size: 14px; color: #9CC3CF; margin-top: 18px; }
+.button { display: inline-block; margin-top: 8px; background: var(--sun); color: var(--ocean); font: 800 18px var(--display); padding: 14px 26px; border-radius: 999px; text-decoration: none; }
+.button:hover { background: var(--white); }
+
+.shops { padding: 0 0 72px; max-width: 46em; }
+.shops p { color: var(--ink-soft); font-size: 19px; }
+
+.foot { display: flex; align-items: center; gap: 14px; max-width: 1180px; margin: 0 auto; padding: 28px 24px 40px; border-top: 1px solid #BFDCD6; color: var(--ink-soft); font-size: 15px; }
+.foot p { margin: 0; }
+
+@media (max-width: 900px) {
+  .hero { grid-template-columns: 1fr; padding-top: 16px; }
+  .steps { grid-template-columns: 1fr 1fr; }
+  .drive { grid-template-columns: 1fr; padding: 36px 26px; gap: 24px; }
+}
+@media (max-width: 560px) {
+  body { font-size: 17px; }
+  .bar nav a:not(.nav-cta) { display: none; }
+  .steps { grid-template-columns: 1fr; }
+  .steps li { padding-right: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .trip { animation: none; stroke-dashoffset: 0; }
+  .rider { display: none; }
+}

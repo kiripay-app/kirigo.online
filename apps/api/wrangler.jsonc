@@ -34,6 +34,13 @@
 			"bucket_name": "kirigo-tiles"
 		}
 	],
+	"workers_dev": true,
+	"preview_urls": false,
+	// kirigo.online is in this Cloudflare account, so the deploy creates the DNS records and certificate itself
+	"routes": [
+		{ "pattern": "kirigo.online", "custom_domain": true },
+		{ "pattern": "www.kirigo.online", "custom_domain": true }
+	],
 	"durable_objects": {
 		"bindings": [
 			{

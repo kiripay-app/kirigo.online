@@ -16,7 +16,13 @@ export { DriverPresence } from './do/DriverPresence';
 
 const app = new Hono<AppEnv>({ strict: false });
 
+// www.kirigo.online → kirigo.online (one address for links, sign-in and app stores)
 app.use('*', async (c, next) => {
+  const url = new URL(c.req.url);
+  if (url.hostname === 'www.kirigo.online') {
+    url.hostname = 'kirigo.online';
+    return c.redirect(url.toString(), 301);
+  }
   await next();
   c.header('x-content-type-options', 'nosniff');
   c.header('referrer-policy', 'no-referrer');

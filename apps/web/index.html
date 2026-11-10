@@ -3,28 +3,86 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>KiriGo — deliveries across Tarawa</title>
-  <meta name="description" content="Order from KiriPay and KiriPOS shops and have it delivered. Drive with KiriGo and keep 100% of your delivery charges." />
-  <link rel="stylesheet" href="/src/style.css" />
+  <title>KiriGo — deliveries along the Tarawa road</title>
+  <meta name="description" content="Order from KiriPay and KiriPOS shops and have it brought to your door. Choose your driver, watch them on the map, and KiriPay keeps your money safe until it arrives." />
+  <meta name="theme-color" content="#0B3954" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/landing.css" />
 </head>
 <body>
-  <main class="landing">
-    <header><span class="logo">KiriGo</span></header>
+  <header class="bar">
+    <a class="brand" href="/" aria-label="KiriGo home"><img src="/icon.svg" alt="" width="36" height="36" /><span>KiriGo</span></a>
+    <nav>
+      <a href="#how">How it works</a>
+      <a href="#shops">For shops</a>
+      <a class="nav-cta" href="/driver/">Drive with KiriGo</a>
+    </nav>
+  </header>
+
+  <main>
     <section class="hero">
-      <h1>Mauri. Your order, delivered.</h1>
-      <p>Choose delivery when you shop with KiriPay or a KiriPOS shop. Pick your driver by price and rating, watch them on the map, and your money stays safe with KiriPay until your order arrives.</p>
+      <div class="hero-text">
+        <h1>Mauri. Your order, brought down the road to you.</h1>
+        <p class="lede">Shop with KiriPay or any KiriPOS shop and choose delivery. Pick your driver by price and rating, watch them come to you, and KiriPay holds your money until the order is in your hands.</p>
+        <p class="hero-note">Delivery appears at checkout in the KiriPay app.</p>
+      </div>
+
+      <figure class="route" aria-label="A delivery travelling along the Tarawa road from a shop in Bairiki to a home in Bikenibeu">
+        <svg viewBox="0 0 560 360" role="img">
+          <!-- the lagoon side of the atoll: a stylised line, west to east, then north -->
+          <path class="reef" d="M30 250 C 90 238, 120 262, 170 250 S 260 236, 300 246 S 400 268, 452 240 C 500 214, 520 170, 522 120 C 524 80, 512 52, 500 30" />
+          <path id="road" class="road" d="M30 250 C 90 238, 120 262, 170 250 S 260 236, 300 246 S 400 268, 452 240 C 500 214, 520 170, 522 120 C 524 80, 512 52, 500 30" />
+          <path id="trip" class="trip" d="M122 252 C 150 256, 160 252, 170 250 S 260 236, 300 246 S 360 260, 382 258" />
+          <text class="water" x="300" y="150" text-anchor="middle">Tarawa lagoon</text>
+          <g class="place"><circle cx="30" cy="250" r="4" /><text x="34" y="290" text-anchor="middle">Betio</text></g>
+          <g class="place"><circle cx="452" cy="240" r="4" /><text x="470" y="286" text-anchor="middle">Bonriki</text></g>
+          <g class="pin shop"><circle cx="122" cy="252" r="10" /><text x="122" y="222" text-anchor="middle">Shop, Bairiki</text></g>
+          <g class="pin home"><circle cx="382" cy="258" r="10" /><text x="372" y="302" text-anchor="middle">You, Bikenibeu</text></g>
+          <g class="rider">
+            <circle r="13" />
+            <text text-anchor="middle" dy="4.5">k</text>
+            <animateMotion dur="4.5s" begin="0.6s" fill="freeze" calcMode="spline" keySplines="0.45 0 0.25 1" keyTimes="0;1" keyPoints="0;1"><mpath href="#trip" /></animateMotion>
+          </g>
+        </svg>
+        <figcaption>Live on the map from the shop to your door.</figcaption>
+      </figure>
     </section>
-    <section class="grid">
-      <div class="card"><h3>Pay first, safely</h3><p>KiriPay holds your payment. The shop is only paid when you confirm your order is right.</p></div>
-      <div class="card"><h3>You choose the driver</h3><p>See each driver's price, rating, vehicle and plate before you order.</p></div>
-      <div class="card"><h3>Track it live</h3><p>Follow your driver from the shop to your door.</p></div>
+
+    <section class="how" id="how">
+      <h2>How a delivery works</h2>
+      <ol class="steps">
+        <li><h3>Choose a driver</h3><p>At checkout you see the drivers near the shop: their price, rating, vehicle and plate. You pick.</p></li>
+        <li><h3>Pay once, held safely</h3><p>You pay for the goods and the delivery together. KiriPay holds it; nobody is paid yet.</p></li>
+        <li><h3>Watch it come</h3><p>Follow your driver on the map from the shop to your door.</p></li>
+        <li><h3>Check, then confirm</h3><p>Show your code, check the order, tap “Received, all correct”. Only then is the shop paid.</p></li>
+      </ol>
+      <p class="aside">Wrong item? Send it back. The shop pays for the return and you get your money back, delivery charge included.</p>
     </section>
-    <section class="drive">
-      <h2>Drive with KiriGo</h2>
-      <p>Set your own prices. Keep 100% of every delivery charge — just a small monthly fee, and the first 3 months are free.</p>
-      <a class="btn" href="/driver/">Sign up to drive</a>
+
+    <section class="drive" id="drive">
+      <div class="drive-figure"><span class="pct">100%</span><span class="pct-label">of every delivery charge is yours</span></div>
+      <div class="drive-text">
+        <h2>Drive with KiriGo</h2>
+        <p>Motorbike, car, van or truck. Set your own prices, choose the jobs you take, and get paid into your KiriPay wallet the moment you hand an order over.</p>
+        <p>You pay a small monthly fee, and the first 3 months are free.</p>
+        <a class="button" href="/driver/">Sign up to drive</a>
+        <p class="small">You'll need a KiriPay account with your ID checked, two-step sign-in, and a driver's licence for a motor vehicle.</p>
+      </div>
     </section>
-    <footer>Operated by Nauoi IT Services · <a href="mailto:privacy@nauoi.com.ki">privacy@nauoi.com.ki</a></footer>
+
+    <section class="shops" id="shops">
+      <h2>For KiriPOS shops</h2>
+      <p>Turn on delivery in KiriPOS settings and pin where drivers collect. Orders arrive on your Orders page already paid and held, and you're paid when the customer confirms.</p>
+    </section>
   </main>
+
+  <footer class="foot">
+    <img src="/icon.svg" alt="" width="28" height="28" />
+    <p>KiriGo is part of the KiriPay family, operated by Nauoi IT Services, Kiribati. Privacy questions: <a href="mailto:privacy@nauoi.com.ki">privacy@nauoi.com.ki</a></p>
+  </footer>
 </body>
 </html>
