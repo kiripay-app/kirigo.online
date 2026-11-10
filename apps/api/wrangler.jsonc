@@ -32,14 +32,6 @@
 		{
 			"binding": "TILES",
 			"bucket_name": "kirigo-tiles"
-		},
-		{
-			"bucket_name": "kirigo-photos",
-			"binding": "kirigo_photos"
-		},
-		{
-			"bucket_name": "kirigo-tiles",
-			"binding": "kirigo_tiles"
 		}
 	],
 	"durable_objects": {
