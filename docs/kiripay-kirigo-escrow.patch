@@ -1,0 +1,424 @@
+diff -ruN a/migrations/0048_kirigo_escrow.sql b/migrations/0048_kirigo_escrow.sql
+--- a/migrations/0048_kirigo_escrow.sql	1970-01-01 12:00:00.000000000 +1200
++++ b/migrations/0048_kirigo_escrow.sql	2026-11-11 00:00:59.984077557 +1200
+@@ -0,0 +1,52 @@
++-- 0048: KiriGo delivery escrow (worker/kirigo.ts).
++--
++-- A customer pays goods + delivery once into a HOLD. Each hold is its own ledger account (id = the hold id, owner_id NULL),
++-- exactly like a cash voucher (0030): nobody can cash it out or spend it, and CHECK (balance >= 0) on accounts means it can
++-- never pay out more than was put in. KiriGo's server then releases parts of it (driver at handoff, shop on acceptance)
++-- or refunds it. KiriGo never holds money itself.
++CREATE TABLE escrow_holds (
++  id TEXT PRIMARY KEY,                       -- hld_…, also the id of this hold's ledger account
++  payer_id TEXT NOT NULL REFERENCES users(id),
++  amount INTEGER NOT NULL CHECK (amount > 0),
++  released INTEGER NOT NULL DEFAULT 0 CHECK (released >= 0),
++  refunded INTEGER NOT NULL DEFAULT 0 CHECK (refunded >= 0),
++  ref TEXT UNIQUE,                           -- the KiriGo order this hold pays for (set once, never changed)
++  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
++  hold_tx TEXT NOT NULL,
++  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
++);
++CREATE INDEX idx_escrow_holds_payer ON escrow_holds(payer_id, created_at);
++-- never more out than in, even if two calls land at the same moment (the whole move is undone)
++CREATE TRIGGER escrow_holds_cap BEFORE UPDATE OF released, refunded ON escrow_holds
++WHEN NEW.released + NEW.refunded > NEW.amount
++BEGIN SELECT RAISE(ABORT, 'more than the hold'); END;
++-- a hold's order, payer and amount are fixed once written
++CREATE TRIGGER escrow_holds_fixed BEFORE UPDATE ON escrow_holds
++WHEN NEW.id IS NOT OLD.id OR NEW.payer_id IS NOT OLD.payer_id OR NEW.amount IS NOT OLD.amount OR NEW.hold_tx IS NOT OLD.hold_tx
++  OR (OLD.ref IS NOT NULL AND NEW.ref IS NOT OLD.ref)
++BEGIN SELECT RAISE(ABORT, 'hold details are fixed'); END;
++CREATE TRIGGER escrow_holds_no_delete BEFORE DELETE ON escrow_holds BEGIN SELECT RAISE(ABORT, 'holds are kept'); END;
++
++-- every release and refund out of a hold, with its ledger transaction. Append-only.
++CREATE TABLE escrow_moves (
++  id INTEGER PRIMARY KEY AUTOINCREMENT,
++  hold_id TEXT NOT NULL REFERENCES escrow_holds(id),
++  action TEXT NOT NULL CHECK (action IN ('release','refund')),
++  to_account TEXT NOT NULL,
++  amount INTEGER NOT NULL CHECK (amount > 0),
++  transaction_id TEXT NOT NULL,              -- the ledger transaction (no FOREIGN KEY: this row is written in the same batch, just before it)
++  idempotency_key TEXT NOT NULL UNIQUE,
++  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
++);
++CREATE INDEX idx_escrow_moves_hold ON escrow_moves(hold_id);
++CREATE TRIGGER escrow_moves_no_update BEFORE UPDATE ON escrow_moves BEGIN SELECT RAISE(ABORT, 'escrow moves are append-only'); END;
++CREATE TRIGGER escrow_moves_no_delete BEFORE DELETE ON escrow_moves BEGIN SELECT RAISE(ABORT, 'escrow moves are append-only'); END;
++
++-- one-time codes for "Sign in with KiriPay" (KiriGo driver app and admin). Only a hash is stored; a code works once, for 5 minutes.
++CREATE TABLE kirigo_auth_codes (
++  code_hash TEXT PRIMARY KEY,
++  user_id TEXT NOT NULL REFERENCES users(id),
++  mfa INTEGER NOT NULL DEFAULT 0,
++  created_at TEXT NOT NULL,
++  used_at TEXT
++);
+diff -ruN a/worker/index.ts b/worker/index.ts
+--- a/worker/index.ts	2026-11-11 00:00:59.978883669 +1200
++++ b/worker/index.ts	2026-11-11 00:00:59.981323428 +1200
+@@ -5,6 +5,7 @@
+ import { registerMarket } from "./market";
+ import { registerFeatures } from "./features";
+ import { registerVouchers } from "./vouchers";
++import { registerKiriGo } from "./kirigo";
+ import { registerNotices } from "./notices";
+ import { registerSupport } from "./support";
+ import { registerPrivacy } from "./privacy";
+@@ -46,6 +47,9 @@
+   MARKET_SECRET?: string;      // secret, the same value as KiriPOS has. Lets only this server read the Marketplace catalog and place orders there. Unset = Marketplace is off
+   MARKET_API_URL?: string;     // KiriPOS address; defaults to https://kiripos.online
+   SUPPORT_ALERT_EMAIL?: string;  // secret. Where a "new support request" alert goes. The address is never shown to members or put in the code
++  KIRIGO_URL?: string;           // KiriGo delivery address; defaults to https://kirigo.online
++  KIRIGO_ESCROW_KEY?: string;    // secret, the same value as KiriGo's KIRIPAY_ESCROW_KEY. Lets only KiriGo's server move escrow money (worker/kirigo.ts)
++  KIRIGO_SERVICE_KEY?: string;   // secret, the same value as KiriGo's KIRIPAY_SERVICE_KEY. KiriPay -> KiriGo calls for members, and KiriGo's signed webhooks
+ };
+ type User = { id: string; email: string; name: string; role: string; admin_role: string | null; status: string; kyc_tier: number; phone: string | null; email_verified: number; phone_verified: number; totp_enabled: number; has_pin: number; pin_len: number | null; has_avatar: number; avatar_source: string | null };
+ export type Vars = { user: User; mfa: boolean; locked: boolean; tmp: string | null; sid: string | null };
+@@ -2210,6 +2214,13 @@
+ const { sweepArchive } = registerArchive({ admin, audit, ipOf, need });
+ registerMarket({ api, audit, ipOf });
+ 
++// KiriGo delivery: escrow holds for deliveries, the KiriGo customer routes, and "Sign in with KiriPay" (worker/kirigo.ts)
++registerKiriGo({
++  app, api, audit, ipOf, move, accountOf, checkRules, attempt, verifyToken, sha256hex,
++  checkPin: checkPinForPayment,
++  isDecline: (e) => (e instanceof Decline ? e.code : null),
++});
++
+ registerGateway({
+   app, api, admin, audit, id, ipOf, pay, createRequest, accountOf, heldFor, history, need, hashPassword, sha256hex, appUrl, bankDetails, sendEmail, emailLayout, lockSso,
+   isDecline: (e) => (e instanceof Decline ? e.code : null),
+diff -ruN a/worker/kirigo.ts b/worker/kirigo.ts
+--- a/worker/kirigo.ts	1970-01-01 12:00:00.000000000 +1200
++++ b/worker/kirigo.ts	2026-11-11 00:00:59.981954622 +1200
+@@ -0,0 +1,329 @@
++// KiriGo delivery: escrow holds, the money side of every delivery.
++//
++// A customer pays goods + delivery ONCE, in the KiriPay app, into a hold. Each hold is its own ledger account with no
++// owner (the same idea as cash vouchers, migrations/0030): it can never be cashed out or spent by anyone, and the
++// accounts CHECK (balance >= 0) means it can never pay out more than was put in. KiriGo then tells KiriPay, server to
++// server, where the money goes: the driver's share at handoff, the shop's share when the customer accepts, refunds.
++// KiriGo itself never holds money.
++//
++// Three kinds of routes:
++//   /api/kirigo/...            the signed-in member (KiriPay app): pay for a delivery, and everything else passed to KiriGo
++//   /api/internal/escrow/...   KiriGo's server only (x-kirigo-key = KIRIGO_ESCROW_KEY): read, release, refund, charge
++//   /kirigo/authorize          "Sign in with KiriPay" for the KiriGo driver app and admin
++import type { Hono } from "hono";
++import { getCookie } from "hono/cookie";
++import type { Env, Vars } from "./index";
++import { computeFee, loadSettings } from "./fees";
++
++type H = Hono<{ Bindings: Env; Variables: Vars }>;
++type MoveFn = (env: Env, m: any) => Promise<{ id: string; duplicate: boolean }>;
++type Deps = {
++  app: H; api: H;
++  audit: (env: Env, actor: string | null, action: string, target?: string | null, detail?: unknown, ip?: string | null) => Promise<void>;
++  ipOf: (c: any) => string | null;
++  move: MoveFn;
++  accountOf: (env: Env, userId: string) => Promise<{ id: string; balance: number }>;
++  checkRules: (env: Env, payer: any, payeeId: string | null, amount: number, opts?: { skipLimits?: boolean; pinApproved?: boolean; pinUsed?: boolean }) => Promise<{ dailyGuard?: any }>;
++  attempt: (env: Env, userId: string, counterparty: string | null, amount: number, result: string, txId?: string) => Promise<void>;
++  checkPin: (c: any, u: any, pin: unknown) => Promise<Response | null>;
++  verifyToken: (token: string, secret: string) => Promise<{ sub: string; mfa?: boolean; pre?: boolean; vch?: boolean; tmp?: string; ver?: number } | null>;
++  sha256hex: (s: string) => Promise<string>;
++  isDecline: (e: unknown) => string | null;
++};
++
++const enc = new TextEncoder();
++const now = () => new Date().toISOString();
++const rid = (p: string) => `${p}_${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
++const ID_RE = /^[A-Za-z0-9_-]{3,80}$/;
++const KEY_RE = /^[A-Za-z0-9_:#.-]{6,200}$/;
++const noStore = { "cache-control": "no-store" };
++const jbody = async (c: any) => { const v = await c.req.json().catch(() => null); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; };
++const goBase = (env: Env) => (env.KIRIGO_URL || "https://kirigo.online").replace(/\/$/, "");
++
++function safeEqual(a: string, b: string) {
++  if (!a || a.length !== b.length) return false;
++  let r = 0;
++  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
++  return r === 0;
++}
++
++async function hmacHex(secret: string, msg: string) {
++  const k = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
++  return [...new Uint8Array(await crypto.subtle.sign("HMAC", k, enc.encode(msg)))].map((b) => b.toString(16).padStart(2, "0")).join("");
++}
++
++type Hold = { id: string; payer_id: string; amount: number; released: number; refunded: number; ref: string | null; status: string };
++const holdView = (h: Hold) => ({ id: h.id, payerId: h.payer_id, amount: h.amount, released: h.released, refunded: h.refunded, remaining: h.amount - h.released - h.refunded, ref: h.ref, status: h.status });
++
++/** Calls to KiriGo for a signed-in member. */
++async function toKiriGo(env: Env, userId: string, path: string, init: { method?: string; body?: BodyInit | null; contentType?: string; headers?: Record<string, string> } = {}) {
++  if (!env.KIRIGO_SERVICE_KEY) return { status: 503, data: { error: "KIRIGO_NOT_SET_UP" } as any };
++  try {
++    const res = await fetch(goBase(env) + "/api/svc" + path, {
++      method: init.method ?? "GET", body: init.body ?? undefined, signal: AbortSignal.timeout(10_000),
++      headers: { "x-kirigo-key": env.KIRIGO_SERVICE_KEY, "x-kirigo-user": userId, ...(init.contentType ? { "content-type": init.contentType } : {}), ...(init.headers ?? {}) },
++    });
++    return { status: res.status, data: await res.json().catch(() => ({})) as any };
++  } catch {
++    return { status: 502, data: { error: "KIRIGO_UNAVAILABLE" } as any };
++  }
++}
++
++export function registerKiriGo(d: Deps) {
++  const { app, api, audit, ipOf, move } = d;
++
++  // ================================================================ member side (KiriPay app)
++
++  /**
++   * Pay for a delivery: goods + the chosen driver's price go into a new hold, then the order is sent to KiriGo.
++   * If KiriGo refuses it (quote expired, driver gone…), the hold is given straight back.
++   * body: { quoteId, driverId, fallbackDriverIds?, source, sourceRef, goodsCents, deliveryCents, landmark?, sharePhone?, key, pin? }
++   */
++  api.post("/kirigo/orders", async (c) => {
++    const u = c.get("user");
++    const b = await jbody(c);
++    const goods = Number(b.goodsCents), delivery = Number(b.deliveryCents);
++    const amount = goods + delivery;
++    if (!Number.isInteger(goods) || goods <= 0 || !Number.isInteger(delivery) || delivery < 0 || !KEY_RE.test(String(b.key ?? ""))) return c.json({ error: "BAD_REQUEST" }, 400);
++    if (b.pin !== undefined && b.pin !== null && b.pin !== "") {
++      const bad = await d.checkPin(c, u, b.pin);
++      if (bad) return bad;
++    }
++    const holdId = rid("hld");
++    try {
++      const rules = await d.checkRules(c.env, u, null, amount, { pinApproved: !!b.pin });
++      const from = await d.accountOf(c.env, u.id);
++      const r = await move(c.env, {
++        type: "transfer", tag: "kirigo_hold", fromAccount: from.id, toAccount: holdId, amount, initiatedBy: u.id, key: `kirigo:${b.key}`,
++        reference: "KiriGo delivery", dailyGuard: rules.dailyGuard,
++        pre: (txId: string) => [
++          c.env.DB.prepare("INSERT INTO accounts (id, owner_id, kind, balance) VALUES (?, NULL, 'user', 0)").bind(holdId),
++          c.env.DB.prepare("INSERT INTO escrow_holds (id, payer_id, amount, hold_tx) VALUES (?,?,?,?)").bind(holdId, u.id, amount, txId),
++        ],
++      });
++      const hold = r.duplicate
++        ? await c.env.DB.prepare("SELECT * FROM escrow_holds WHERE hold_tx=?").bind(r.id).first<Hold>()
++        : await c.env.DB.prepare("SELECT * FROM escrow_holds WHERE id=?").bind(holdId).first<Hold>();
++      if (!hold) return c.json({ error: "SERVER_ERROR" }, 500);
++      await d.attempt(c.env, u.id, null, amount, "APPROVED", r.id);
++      if (hold.ref) return c.json({ status: "APPROVED", duplicate: true, orderId: hold.ref }, 200, noStore);
++
++      const go = await toKiriGo(c.env, u.id, "/orders", {
++        method: "POST", contentType: "application/json",
++        body: JSON.stringify({
++          quoteId: b.quoteId, driverId: b.driverId, fallbackDriverIds: Array.isArray(b.fallbackDriverIds) ? b.fallbackDriverIds.slice(0, 10) : [],
++          source: b.source, sourceRef: b.sourceRef, goodsCents: goods, landmark: String(b.landmark ?? "").slice(0, 200), sharePhone: !!b.sharePhone, holdId: hold.id,
++        }),
++      });
++      if (go.status >= 300) {
++        // KiriGo said no: nothing was sent to a shop or a driver, so the money goes straight back
++        await refundHold(c.env, hold.id, hold.amount - hold.released - hold.refunded, `kirigo:${b.key}:undo`, "KiriGo order not created");
++        return c.json({ status: "DECLINED", reason: go.data?.error ?? "KIRIGO_REFUSED", detail: go.data }, 200);
++      }
++      await audit(c.env, u.id, "kirigo.paid", hold.id, { amount, order: go.data?.id }, ipOf(c));
++      return c.json({ status: "APPROVED", order: go.data }, 200, noStore);
++    } catch (e) {
++      const code = d.isDecline(e);
++      if (code) { await d.attempt(c.env, u.id, null, amount, code); return c.json({ status: "DECLINED", reason: code }); }
++      throw e;
++    }
++  });
++
++  /** Everything else the KiriPay app needs from KiriGo, passed through for the signed-in member. */
++  api.all("/kirigo/svc/*", async (c) => {
++    const u = c.get("user");
++    const path = c.req.path.replace(/^.*\/kirigo\/svc/, "");
++    if (path.startsWith("/dev") || (path === "/orders" && c.req.method === "POST")) return c.json({ error: "NOT_FOUND" }, 404);
++    const qs = new URL(c.req.url).search;
++    const isPhoto = (c.req.header("content-type") ?? "").startsWith("image/");
++    const r = await toKiriGo(c.env, u.id, path + qs, {
++      method: c.req.method,
++      body: c.req.method === "GET" ? null : isPhoto ? await c.req.arrayBuffer() : await c.req.text(),
++      contentType: c.req.header("content-type") ?? undefined,
++      headers: isPhoto ? Object.fromEntries(["x-photo-lat", "x-photo-lng", "x-photo-at"].map((h) => [h, c.req.header(h) ?? ""])) : {},
++    });
++    return c.json(r.data, (r.status >= 200 && r.status < 600 ? r.status : 502) as any);
++  });
++
++  /** Order status changes from KiriGo (signed). Kept in the audit log; the app's notice feed can read them from here. */
++  app.post("/api/kirigo/webhook", async (c) => {
++    const raw = await c.req.text();
++    const sig = c.req.header("x-kirigo-signature") ?? "";
++    if (!c.env.KIRIGO_SERVICE_KEY || !safeEqual(sig, await hmacHex(c.env.KIRIGO_SERVICE_KEY, raw))) return c.json({ error: "UNAUTHENTICATED" }, 401);
++    let m: any = {};
++    try { m = JSON.parse(raw); } catch { return c.json({ error: "BAD_REQUEST" }, 400); }
++    if (m.customerId && ID_RE.test(m.customerId)) await audit(c.env, null, "kirigo.status", m.orderId ?? null, { event: m.event, status: m.status, customer: m.customerId });
++    return c.json({ ok: true });
++  });
++
++  // ================================================================ "Sign in with KiriPay" (KiriGo driver app + admin)
++
++  /** The member is sent here by KiriGo. Signed in → straight back with a one-time code. Not signed in → sign in first. */
++  app.get("/kirigo/authorize", async (c) => {
++    const state = c.req.query("state") ?? "";
++    const redirect = c.req.query("redirect_uri") ?? "";
++    let target: URL;
++    try { target = new URL(redirect); } catch { return c.text("bad redirect", 400); }
++    if (target.origin !== new URL(goBase(c.env)).origin || !/^[A-Za-z0-9_-]{6,80}$/.test(state)) return c.text("bad redirect", 400);
++    const token = getCookie(c, "kp_session");
++    const claims = token ? await d.verifyToken(token, c.env.JWT_SECRET) : null;
++    if (!claims || claims.pre || claims.vch || claims.tmp) {
++      const back = `/kirigo/authorize?state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirect)}`;
++      return c.redirect(`/login?next=${encodeURIComponent(back)}`, 302);
++    }
++    const code = rid("kgc");
++    await c.env.DB.prepare("INSERT INTO kirigo_auth_codes (code_hash, user_id, mfa, created_at) VALUES (?,?,?,?)")
++      .bind(await d.sha256hex(code), claims.sub, claims.mfa ? 1 : 0, now()).run();
++    target.searchParams.set("code", code);
++    target.searchParams.set("state", state);
++    return c.redirect(target.toString(), 302);
++  });
++
++  // ================================================================ KiriGo's server only
++
++  const internal = async (c: any, next: () => Promise<void>) => {
++    if (!c.env.KIRIGO_ESCROW_KEY || !safeEqual(c.req.header("x-kirigo-key") ?? "", c.env.KIRIGO_ESCROW_KEY)) return c.json({ error: "UNAUTHENTICATED" }, 401);
++    await next();
++  };
++  app.use("/api/internal/*", internal);
++
++  app.post("/api/internal/kirigo/exchange", async (c) => {
++    const b = await jbody(c);
++    const h = await d.sha256hex(String(b.code ?? ""));
++    const row = await c.env.DB.prepare("SELECT * FROM kirigo_auth_codes WHERE code_hash=?").bind(h).first<any>();
++    if (!row || row.used_at || Date.parse(row.created_at) < Date.now() - 5 * 60_000) return c.json({ error: "BAD_CODE" }, 400);
++    const used = await c.env.DB.prepare("UPDATE kirigo_auth_codes SET used_at=? WHERE code_hash=? AND used_at IS NULL").bind(now(), h).run();
++    if (!used.meta.changes) return c.json({ error: "BAD_CODE" }, 400);
++    const u = await c.env.DB.prepare("SELECT id, name, admin_role, status FROM users WHERE id=? AND deleted_at IS NULL").bind(row.user_id).first<any>();
++    if (!u || u.status !== "active") return c.json({ error: "BAD_CODE" }, 400);
++    return c.json({ userId: u.id, firstName: String(u.name ?? "").split(" ")[0], mfa: !!row.mfa, adminRole: u.admin_role ?? null });
++  });
++
++  app.get("/api/internal/escrow/holds/:id", async (c) => {
++    const h = await c.env.DB.prepare("SELECT * FROM escrow_holds WHERE id=?").bind(c.req.param("id")).first<Hold>();
++    return h ? c.json(holdView(h)) : c.json({ error: "HOLD_NOT_FOUND" }, 404);
++  });
++
++  /** Tie a hold to one KiriGo order. A hold can never be used for two orders. */
++  app.post("/api/internal/escrow/holds/:id/bind", async (c) => {
++    const b = await jbody(c);
++    const ref = String(b.ref ?? "");
++    if (!ID_RE.test(ref)) return c.json({ error: "BAD_REQUEST" }, 400);
++    await c.env.DB.prepare("UPDATE escrow_holds SET ref=? WHERE id=? AND ref IS NULL").bind(ref, c.req.param("id")).run();
++    const h = await c.env.DB.prepare("SELECT ref FROM escrow_holds WHERE id=?").bind(c.req.param("id")).first<{ ref: string }>();
++    if (!h) return c.json({ error: "HOLD_NOT_FOUND" }, 404);
++    return h.ref === ref ? c.json({ ref: c.req.param("id") }) : c.json({ error: "HOLD_ALREADY_USED" }, 409);
++  });
++
++  /** Pay part of a hold to a driver (member wallet) or a shop (merchant wallet; KiriPay's merchant fee applies as for any sale). */
++  app.post("/api/internal/escrow/holds/:id/release", async (c) => {
++    const b = await jbody(c);
++    const h = await c.env.DB.prepare("SELECT * FROM escrow_holds WHERE id=?").bind(c.req.param("id")).first<Hold>();
++    if (!h) return c.json({ error: "HOLD_NOT_FOUND" }, 404);
++    const amount = Number(b.amount);
++    const key = String(b.idempotency_key ?? "");
++    if (!Number.isInteger(amount) || amount <= 0 || !KEY_RE.test(key)) return c.json({ error: "BAD_REQUEST" }, 400);
++    const to = await walletOf(c.env, b.to);
++    if (!to) return c.json({ error: "RECIPIENT_NOT_FOUND" }, 404);
++    let fee = 0, feeBy: "receiver" | undefined;
++    if (b.to?.kind === "merchant") {
++      // the shop pays KiriPay's normal merchant fee, always out of what it receives (a hold can't pay extra on top)
++      const rule = (await loadSettings(c.env)).fees.merchant_payment;
++      fee = computeFee({ ...rule, by: "receiver" }, amount);
++      feeBy = fee ? "receiver" : undefined;
++    }
++    return moveFromHold(c, h, "release", to.account, amount, key, String(b.reference ?? "KiriGo").slice(0, 140), fee, feeBy);
++  });
++
++  app.post("/api/internal/escrow/holds/:id/refund", async (c) => {
++    const b = await jbody(c);
++    const h = await c.env.DB.prepare("SELECT * FROM escrow_holds WHERE id=?").bind(c.req.param("id")).first<Hold>();
++    if (!h) return c.json({ error: "HOLD_NOT_FOUND" }, 404);
++    const amount = Number(b.amount);
++    const key = String(b.idempotency_key ?? "");
++    if (!Number.isInteger(amount) || amount <= 0 || !KEY_RE.test(key)) return c.json({ error: "BAD_REQUEST" }, 400);
++    const payer = await d.accountOf(c.env, h.payer_id);
++    return moveFromHold(c, h, "refund", payer.id, amount, key, String(b.reference ?? "KiriGo refund").slice(0, 140), 0, undefined);
++  });
++
++  /**
++   * Move money between two wallets for KiriGo: a shop paying back a customer or a return driver for its own mistake,
++   * a driver's charge clawed back after damage, or a driver's monthly KiriGo fee (to KiriPay income, VAT split off).
++   */
++  app.post("/api/internal/escrow/charges", async (c) => {
++    const b = await jbody(c);
++    const amount = Number(b.amount);
++    const key = String(b.idempotency_key ?? "");
++    if (!Number.isInteger(amount) || amount <= 0 || !KEY_RE.test(key)) return c.json({ error: "BAD_REQUEST" }, 400);
++    const from = await walletOf(c.env, b.from);
++    if (!from || b.from?.kind === "fees") return c.json({ error: "PAYER_NOT_FOUND" }, 404);
++    const toFees = b.to?.kind === "fees";
++    const to = toFees ? { account: "sys_fees" } : await walletOf(c.env, b.to);
++    if (!to) return c.json({ error: "RECIPIENT_NOT_FOUND" }, 404);
++    try {
++      const r = await move(c.env, {
++        type: toFees ? "payment" : "transfer", tag: toFees ? "kirigo_fee" : "kirigo_charge", splitVat: toFees,
++        fromAccount: from.account, toAccount: to.account, amount, initiatedBy: "kirigo", key, reference: String(b.reference ?? "KiriGo").slice(0, 140),
++      });
++      await audit(c.env, "kirigo", "kirigo.charge", from.account, { to: to.account, amount, key });
++      return c.json({ ref: r.id, duplicate: r.duplicate });
++    } catch (e) {
++      const code = d.isDecline(e);
++      if (code) return c.json({ error: code }, 409);
++      throw e;
++    }
++  });
++
++  // ---------------------------------------------------------------- helpers
++
++  /** A member's wallet, or a merchant's wallet (its hidden wallet user). */
++  async function walletOf(env: Env, p: any): Promise<{ account: string } | null> {
++    if (!p || !ID_RE.test(String(p.id ?? ""))) return null;
++    if (p.kind === "user") {
++      const a = await env.DB.prepare("SELECT a.id FROM accounts a JOIN users u ON u.id=a.owner_id WHERE a.owner_id=? AND u.status='active'").bind(p.id).first<{ id: string }>();
++      return a ? { account: a.id } : null;
++    }
++    if (p.kind === "merchant") {
++      const a = await env.DB.prepare("SELECT a.id FROM merchants m JOIN accounts a ON a.owner_id=m.wallet_user_id WHERE m.id=? AND m.status='approved'").bind(p.id).first<{ id: string }>();
++      return a ? { account: a.id } : null;
++    }
++    return null;
++  }
++
++  async function refundHold(env: Env, holdId: string, amount: number, key: string, reference: string) {
++    if (amount <= 0) return;
++    const h = await env.DB.prepare("SELECT * FROM escrow_holds WHERE id=?").bind(holdId).first<Hold>();
++    if (!h) return;
++    const payer = await d.accountOf(env, h.payer_id);
++    await move(env, {
++      type: "transfer", tag: "kirigo_refund", fromAccount: holdId, toAccount: payer.id, amount, initiatedBy: "kirigo", key, reference,
++      pre: (txId: string) => [
++        env.DB.prepare("UPDATE escrow_holds SET refunded = refunded + ?, status = CASE WHEN amount - released - refunded - ? = 0 THEN 'closed' ELSE status END WHERE id=?").bind(amount, amount, holdId),
++        env.DB.prepare("INSERT INTO escrow_moves (hold_id, action, to_account, amount, transaction_id, idempotency_key) VALUES (?,?,?,?,?,?)").bind(holdId, "refund", payer.id, amount, txId, key),
++      ],
++    });
++  }
++
++  /** One atomic step: the ledger move, the hold's running totals (capped by a trigger) and the move record. */
++  async function moveFromHold(c: any, h: Hold, action: "release" | "refund", toAccount: string, amount: number, key: string, reference: string, fee: number, feeBy: "receiver" | undefined) {
++    const col = action === "release" ? "released" : "refunded";
++    try {
++      const r = await move(c.env, {
++        type: action === "release" ? "payment" : "transfer", tag: `kirigo_${action}`, fromAccount: h.id, toAccount, amount, initiatedBy: "kirigo", key, reference,
++        ...(fee ? { fee, feeBy } : {}),
++        pre: (txId: string) => [
++          c.env.DB.prepare(`UPDATE escrow_holds SET ${col} = ${col} + ?, status = CASE WHEN amount - released - refunded - ? = 0 THEN 'closed' ELSE status END WHERE id=?`).bind(amount, amount, h.id),
++          c.env.DB.prepare("INSERT INTO escrow_moves (hold_id, action, to_account, amount, transaction_id, idempotency_key) VALUES (?,?,?,?,?,?)").bind(h.id, action, toAccount, amount, txId, key),
++        ],
++      });
++      await audit(c.env, "kirigo", `kirigo.${action}`, h.id, { to: toAccount, amount, fee, key });
++      return c.json({ ref: r.id, duplicate: r.duplicate });
++    } catch (e) {
++      const msg = String((e as any)?.message ?? e);
++      if (msg.includes("more than the hold")) return c.json({ error: "MORE_THAN_HELD" }, 409);
++      const code = d.isDecline(e);
++      if (code) return c.json({ error: code === "INSUFFICIENT_FUNDS" ? "MORE_THAN_HELD" : code }, 409);
++      throw e;
++    }
++  }
++}

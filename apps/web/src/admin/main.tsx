@@ -1,0 +1,279 @@
+import { StrictMode, useCallback, useEffect, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { captureToken, client, explain, money, setToken } from '../api';
+
+const call = client('admin', () => location.reload());
+const fmt = (iso?: string | null) => (iso ? new Date(Date.parse(iso) + 12 * 3600_000).toISOString().replace('T', ' ').slice(0, 16).replace(/^(\d+)-(\d+)-(\d+)/, '$3/$2/$1') : '—');
+
+function App() {
+  const [token] = useState(() => captureToken('admin'));
+  const [tab, setTab] = useState('settings');
+  if (!token) return (
+    <div className="app"><div className="top"><span className="logo">KiriGo Admin</span></div>
+      <div className="card"><p>Sign in with your KiriPay admin account (two-step sign-in required).</p><a className="btn block" href="/auth/start?app=admin">Sign in with KiriPay</a></div></div>
+  );
+  const tabs: [string, string][] = [['settings', 'Settings'], ['drivers', 'Drivers'], ['problems', 'Problems'], ['orders', 'Orders'], ['flags', 'Ratings'], ['selfies', 'Shift selfies'], ['money', 'Money']];
+  return (
+    <div className="app wide">
+      <div className="top"><span className="logo">KiriGo Admin</span><button className="secondary" onClick={() => { setToken('admin', null); location.reload(); }}>Sign out</button></div>
+      <nav className="tabs">{tabs.map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}</nav>
+      {tab === 'settings' && <Settings />}
+      {tab === 'drivers' && <Drivers />}
+      {tab === 'problems' && <Problems />}
+      {tab === 'orders' && <Orders />}
+      {tab === 'flags' && <Flags />}
+      {tab === 'selfies' && <Selfies />}
+      {tab === 'money' && <Money />}
+    </div>
+  );
+}
+
+function useLoad<T>(path: string) {
+  const [data, setData] = useState<T | null>(null);
+  const [err, setErr] = useState('');
+  const load = useCallback(() => call<T>(path).then(setData).catch((e) => setErr(explain(e))), [path]);
+  useEffect(() => { void load(); }, [load]);
+  return { data, err, load, setErr };
+}
+
+// ------------------------------------------------------------------ settings
+
+const FIELDS: { k: string; label: string; kind: 'cents' | 'num' | 'bool' | 'night' | 'text' }[] = [
+  { k: 'delivery_open', label: 'Delivery service open', kind: 'bool' },
+  { k: 'driver_signup_open', label: 'Driver sign-up open', kind: 'bool' },
+  { k: 'monthly_fee_cents', label: 'Driver monthly fee (VAT incl.) $', kind: 'cents' },
+  { k: 'free_period_months', label: 'Free launch period (months)', kind: 'num' },
+  { k: 'max_per_km_cents', label: 'Maximum price per km $', kind: 'cents' },
+  { k: 'floor_minimum_cents', label: 'Lowest allowed minimum charge $', kind: 'cents' },
+  { k: 'night_hours', label: 'Night surcharge hours', kind: 'night' },
+  { k: 'enroute_pickup_fee_cents', label: 'En-route pickup fee $', kind: 'cents' },
+  { k: 'pickup_radius_km', label: 'Pickup search radius (km)', kind: 'num' },
+  { k: 'drivers_shown', label: 'Drivers shown at checkout', kind: 'num' },
+  { k: 'accept_window_s', label: 'Driver accept window (seconds)', kind: 'num' },
+  { k: 'door_wait_min', label: 'Wait at the door (minutes)', kind: 'num' },
+  { k: 'auto_release_h', label: 'Shop paid automatically after (hours)', kind: 'num' },
+  { k: 'shop_fault_response_h', label: 'Shop fault-check answer time (hours)', kind: 'num' },
+  { k: 'return_handover_h', label: 'Return must be handed over within (hours)', kind: 'num' },
+  { k: 'return_receipt_h', label: 'Shop confirms return within (hours)', kind: 'num' },
+  { k: 'max_failed_corrections', label: 'Failed corrections before refund', kind: 'num' },
+  { k: 'rating_blind_h', label: 'Ratings hidden for (hours)', kind: 'num' },
+  { k: 'adults_only_after', label: 'Adults only after (HH:MM)', kind: 'text' },
+  { k: 'retention_photos_days', label: 'Keep proof photos (days)', kind: 'num' },
+  { k: 'retention_gps_months', label: 'Keep GPS routes (months)', kind: 'num' },
+];
+
+function Settings() {
+  const { data, err, load, setErr } = useLoad<{ settings: any; missingForLaunch: string[] }>('/api/admin/settings');
+  const [s, setS] = useState<any>(null);
+  const [msg, setMsg] = useState('');
+  useEffect(() => { if (data) setS(data.settings); }, [data]);
+  if (!s) return err ? <div className="error">{err}</div> : <p>Loading…</p>;
+  const save = async () => {
+    setMsg(''); setErr('');
+    try { await call('/api/admin/settings', { method: 'PUT', body: s }); setMsg('Saved'); void load(); }
+    catch (e: any) { setErr(`${explain(e)}${e?.data?.missing ? `: ${e.data.missing.join(', ')}` : ''}`); }
+  };
+  return (
+    <div className="card">
+      {data?.missingForLaunch.length ? <div className="notice">Set these before opening delivery: {data.missingForLaunch.join(', ')}</div> : null}
+      {err && <div className="error">{err}</div>}
+      {FIELDS.map((f) => (
+        <div key={f.k}>
+          {f.kind === 'bool' ? <div className="check"><input type="checkbox" checked={!!s[f.k]} onChange={(e) => setS({ ...s, [f.k]: e.target.checked })} />{f.label}</div> : <label>{f.label}</label>}
+          {f.kind === 'cents' && <input inputMode="decimal" value={s[f.k] == null ? '' : (s[f.k] / 100).toFixed(2)} placeholder="not set" onChange={(e) => setS({ ...s, [f.k]: e.target.value === '' ? null : Math.round(Number(e.target.value) * 100) })} />}
+          {f.kind === 'num' && <input inputMode="numeric" value={s[f.k]} onChange={(e) => setS({ ...s, [f.k]: Number(e.target.value) })} />}
+          {f.kind === 'text' && <input value={s[f.k]} onChange={(e) => setS({ ...s, [f.k]: e.target.value })} />}
+          {f.kind === 'night' && <div className="row"><input placeholder="from 20:00" value={s.night_hours?.start ?? ''} onChange={(e) => setS({ ...s, night_hours: { start: e.target.value, end: s.night_hours?.end ?? '06:00' } })} /><input placeholder="to 06:00" value={s.night_hours?.end ?? ''} onChange={(e) => setS({ ...s, night_hours: { start: s.night_hours?.start ?? '20:00', end: e.target.value } })} /></div>}
+        </div>
+      ))}
+      <button className="block" style={{ marginTop: 16 }} onClick={save}>Save settings</button>
+      {msg && <p style={{ marginTop: 8 }}>{msg}</p>}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ drivers
+
+function Drivers() {
+  const [status, setStatus] = useState('pending');
+  const { data, err, load } = useLoad<any[]>(`/api/admin/drivers?status=${status}`);
+  return (
+    <>
+      <nav className="tabs">{['pending', 'approved', 'suspended', 'rejected'].map((s) => <button key={s} className={status === s ? 'on' : ''} onClick={() => setStatus(s)}>{s}</button>)}</nav>
+      {err && <div className="error">{err}</div>}
+      {data?.length === 0 && <p className="muted">Nobody here.</p>}
+      {data?.map((d) => <DriverCard key={d.id} d={d} onDone={load} />)}
+    </>
+  );
+}
+
+function DriverCard({ d, onDone }: { d: any; onDone: () => void }) {
+  const [f, setF] = useState({ seen: false, match: false, expiry: '', note: '' });
+  const [err, setErr] = useState('');
+  const act = async (path: string, body: unknown) => { try { await call(`/api/admin/drivers/${d.id}/${path}`, { body }); onDone(); } catch (e) { setErr(explain(e)); } };
+  return (
+    <div className="card">
+      <div className="between"><h3>{d.first_name} · {d.driver_code}</h3><span className="pill">{d.status}</span></div>
+      <p className="small">KiriPay member {d.kiripay_user_id} · {d.vehicle_type} {d.plate} · applied {fmt(d.created_at)} · {d.deliveries} deliveries · rating {d.rating_count >= 5 ? d.rating_avg : 'New'}</p>
+      <div className="row">
+        {d.licencePhotoUrl && <div><p className="small">Licence</p><img className="shot" src={d.licencePhotoUrl} alt="licence" /></div>}
+        {d.vehiclePhotoUrl && <div><p className="small">Vehicle</p><img className="shot" src={d.vehiclePhotoUrl} alt="vehicle" /></div>}
+      </div>
+      {err && <div className="error">{err}</div>}
+      {d.status === 'pending' || d.status === 'suspended' ? (
+        <>
+          <p className="small" style={{ marginTop: 8 }}>Compare the licence with the ID selfie in KiriPay admin (KYC) for member {d.kiripay_user_id}.</p>
+          <div className="check"><input type="checkbox" checked={f.seen} onChange={(e) => setF({ ...f, seen: e.target.checked })} />I have seen the driver's licence</div>
+          <div className="check"><input type="checkbox" checked={f.match} onChange={(e) => setF({ ...f, match: e.target.checked })} />The licence photo matches their KiriPay ID selfie</div>
+          <label>Licence expiry</label><input type="date" value={f.expiry} onChange={(e) => setF({ ...f, expiry: e.target.value })} />
+          <label>Note</label><input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} />
+          <div className="row" style={{ marginTop: 8 }}>
+            <button className="secondary" onClick={() => act('reject', { note: f.note || 'Not approved' })}>Reject</button>
+            <button disabled={!f.seen || !f.match || !f.expiry} onClick={() => act('approve', { licenceSeen: true, licenceMatchesKyc: true, licenceExpiry: f.expiry, note: f.note })}>Approve</button>
+          </div>
+        </>
+      ) : d.status === 'approved' ? (
+        <div className="row" style={{ marginTop: 8 }}><input placeholder="Reason" value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} /><button className="danger" disabled={f.note.length < 3} onClick={() => act('suspend', { note: f.note })}>Suspend</button></div>
+      ) : null}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ problems & rulings
+
+function Problems() {
+  const { data, err, load } = useLoad<any[]>('/api/admin/orders?status=PROBLEM_REPORTED');
+  const disputes = useLoad<any[]>('/api/admin/disputes');
+  const due = new Map((disputes.data ?? []).map((d) => [d.order_id, d.due_at]));
+  const mains = (data ?? []).filter((o) => o.kind === 'delivery');
+  return (
+    <>
+      {err && <div className="error">{err}</div>}
+      {!mains.length && <p className="muted">No open problems.</p>}
+      {mains.map((o) => <ProblemCard key={o.id} id={o.id} due={due.get(o.id)} onDone={() => { void load(); void disputes.load(); }} />)}
+    </>
+  );
+}
+
+function ProblemCard({ id, due, onDone }: { id: string; due?: string; onDone: () => void }) {
+  const [d, setD] = useState<any>(null);
+  const [f, setF] = useState({ atFault: 'shop', partial: '', note: '' });
+  const [err, setErr] = useState('');
+  useEffect(() => { call(`/api/admin/orders/${id}`).then(setD).catch((e) => setErr(explain(e))); }, [id]);
+  if (!d) return <div className="card">{err || 'Loading…'}</div>;
+  const o = d.order;
+  const rule = async () => {
+    try {
+      await call(`/api/admin/orders/${id}/rule`, { body: { atFault: f.atFault, note: f.note, ...(f.partial ? { refundGoodsCents: Math.round(Number(f.partial) * 100) } : {}) } });
+      onDone();
+    } catch (e) { setErr(explain(e)); }
+  };
+  return (
+    <div className="card">
+      <div className="between"><h3>{o.shop.name} · {id}</h3>{due && <span className={`pill ${Date.parse(due) < Date.now() ? 'bad' : 'warn'}`}>rule by {fmt(due)}</span>}</div>
+      <p className="small">Goods {money(o.goodsCents)} · delivery {money(o.deliveryCents)} · problem: <b>{o.problem?.reason?.replace(/_/g, ' ')}</b> · customer chose <b>{o.problem?.choice}</b> · shop {o.problem?.shopFault ?? 'has not answered'}</p>
+      <div className="row">{o.photos.map((p: any) => <div key={p.url}><p className="small">{p.kind} · {fmt(p.takenAt)}</p><img className="shot" src={p.url} alt={p.kind} /></div>)}</div>
+      {o.children.length > 0 && <p className="small">Trips: {o.children.map((c: any) => `${c.kind} (${c.label})`).join(' · ')}</p>}
+      <details><summary className="small">Event log ({d.events.length})</summary><table><tbody>{d.events.map((e: any) => <tr key={e.id}><td>{fmt(e.at)}</td><td>{e.actor_type}</td><td>{e.type}</td><td className="small">{e.data_json}</td></tr>)}</tbody></table></details>
+      {err && <div className="error">{err}</div>}
+      <label>Who was at fault?</label>
+      <select value={f.atFault} onChange={(e) => setF({ ...f, atFault: e.target.value })}>
+        <option value="shop">Shop — customer gets goods + delivery back; shop pays the trips</option>
+        <option value="customer">Customer — shop is paid (customer pays any return trip)</option>
+        <option value="driver">Driver — damage in transit: driver's charge goes to the customer, goods refunded</option>
+      </select>
+      {f.atFault === 'shop' && o.problem?.choice === 'keep' && <><label>Partial refund $ (e.g. missing items)</label><input inputMode="decimal" value={f.partial} onChange={(e) => setF({ ...f, partial: e.target.value })} /></>}
+      <label>Note (kept in the log)</label><input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} />
+      <button className="block" style={{ marginTop: 10 }} onClick={rule}>Rule</button>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ orders
+
+function Orders() {
+  const [status, setStatus] = useState('');
+  const { data, err } = useLoad<any[]>(`/api/admin/orders${status ? `?status=${status}` : ''}`);
+  const [open, setOpen] = useState<string | null>(null);
+  if (open) return <OrderDetail id={open} onBack={() => setOpen(null)} />;
+  return (
+    <>
+      <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ maxWidth: 260, marginBottom: 12 }}>
+        <option value="">All</option>{['PAID_HELD', 'DRIVER_ASSIGNED', 'AT_SHOP', 'PICKED_UP', 'ARRIVED', 'HANDED_OVER', 'ACCEPTED', 'PROBLEM_REPORTED', 'REFUNDED', 'NOT_DELIVERED', 'CANCELLED'].map((s) => <option key={s}>{s}</option>)}
+      </select>
+      {err && <div className="error">{err}</div>}
+      <table><thead><tr><th>Created</th><th>Order</th><th>Kind</th><th>Status</th><th>Goods</th><th>Delivery</th></tr></thead>
+        <tbody>{data?.map((o) => <tr key={o.id} onClick={() => setOpen(o.id)} style={{ cursor: 'pointer' }}><td>{fmt(o.created_at)}</td><td>{o.id}</td><td>{o.kind}</td><td>{o.status}</td><td>{money(o.goods_cents)}</td><td>{money(o.delivery_cents)}</td></tr>)}</tbody></table>
+    </>
+  );
+}
+
+function OrderDetail({ id, onBack }: { id: string; onBack: () => void }) {
+  const [d, setD] = useState<any>(null);
+  useEffect(() => { call(`/api/admin/orders/${id}`).then(setD).catch(() => {}); }, [id]);
+  if (!d) return <p>Loading…</p>;
+  const route = d.routes.flatMap((r: any) => JSON.parse(r.points_json));
+  return (
+    <>
+      <button className="secondary" onClick={onBack}>Back</button>
+      <div className="card" style={{ marginTop: 12 }}>
+        <h3>{id} · {d.order.label}</h3>
+        <p className="small">Driver {d.order.driver ? `${d.order.driver.firstName} ${d.order.driver.driverCode} (${d.order.driver.vehicle.type} ${d.order.driver.vehicle.plate})` : '—'} · {route.length} GPS points</p>
+        {route.length > 1 && <a href={`https://www.google.com/maps/dir/${route.filter((_: any, i: number) => i % Math.ceil(route.length / 20) === 0).map((p: any) => `${p.lat},${p.lng}`).join('/')}`} target="_blank" rel="noreferrer">Replay route on a map</a>}
+        <div className="row">{d.order.photos.map((p: any) => <div key={p.url}><p className="small">{p.kind}</p><img className="shot" src={p.url} alt={p.kind} /></div>)}</div>
+      </div>
+      <div className="card"><h3>Money</h3><table><tbody>{d.money.map((m: any) => <tr key={m.id}><td>{fmt(m.created_at)}</td><td>{m.action} → {m.to_kind}</td><td>{money(m.amount_cents)}</td><td><span className={`pill ${m.status === 'done' ? 'good' : m.status === 'failed' ? 'bad' : ''}`}>{m.status}</span></td></tr>)}</tbody></table></div>
+      <div className="card"><h3>Event log (cannot be changed)</h3><table><tbody>{d.events.map((e: any) => <tr key={e.id}><td>{fmt(e.at)}</td><td>{e.actor_type}</td><td>{e.type}</td><td className="small">{e.data_json}</td></tr>)}</tbody></table></div>
+      <div className="card"><h3>Ratings</h3><table><tbody>{d.ratings.map((r: any) => <tr key={r.id}><td>{r.from_type} → {r.to_type}</td><td>{'★'.repeat(r.stars)}</td><td className="small">{r.reasons_json} {r.comment}</td><td>{r.removed_by ? 'removed' : r.visible_at ? 'visible' : 'hidden'}</td>
+        <td>{!r.removed_by && <button className="secondary" onClick={async () => { const reason = prompt('Why remove this rating?'); if (reason) { await call(`/api/admin/ratings/${r.id}/remove`, { body: { reason } }); location.reload(); } }}>Remove</button>}</td></tr>)}</tbody></table></div>
+    </>
+  );
+}
+
+// ------------------------------------------------------------------ ratings, selfies, money
+
+function Flags() {
+  const { data, err } = useLoad<any[]>('/api/admin/flags');
+  return (
+    <div className="card">
+      <p className="small">Patterns only: drivers below 3.5 after 20 ratings, customers below 3.0 after 5, shops below 3.5 after 20.</p>
+      {err && <div className="error">{err}</div>}
+      {!data?.length ? <p className="muted">Nobody flagged.</p> : <table><tbody>{data.map((f) => <tr key={f.kind + f.id}><td>{f.kind}</td><td>{f.name} {f.driver_code ?? ''}</td><td>★ {f.rating_avg} ({f.rating_count})</td>
+        <td>{f.kind === 'customer' && <button className="secondary" onClick={() => call(`/api/admin/customers/${f.id}/${f.delivery_restricted ? 'unrestrict' : 'restrict'}`, { method: 'POST' }).then(() => location.reload())}>{f.delivery_restricted ? 'Allow delivery' : 'Restrict delivery'}</button>}</td></tr>)}</tbody></table>}
+    </div>
+  );
+}
+
+function Selfies() {
+  const { data, load } = useLoad<any[]>('/api/admin/selfies');
+  return (
+    <>
+      <p className="muted">Random shift selfies. Compare each with the driver's KiriPay ID photo.</p>
+      {!data?.length && <p className="muted">Nothing to check.</p>}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12 }}>
+        {data?.map((s) => (
+          <div className="card" key={s.id}>
+            <img className="shot" src={s.selfieUrl} alt="selfie" />
+            <p className="small">{s.first_name} {s.driver_code} · {fmt(s.online_at)}</p>
+            <div className="row"><button className="danger" onClick={() => call(`/api/admin/selfies/${s.id}`, { body: { result: 'no_match' } }).then(load)}>Not them</button><button onClick={() => call(`/api/admin/selfies/${s.id}`, { body: { result: 'match' } }).then(load)}>Match</button></div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function Money() {
+  const failed = useLoad<any[]>('/api/admin/money/failed');
+  const debts = useLoad<any[]>('/api/admin/debts');
+  return (
+    <>
+      <div className="card"><h3>Payments KiriPay refused</h3><p className="small">Network failures retry automatically every minute. These need a look.</p>
+        {!failed.data?.length ? <p className="muted">None.</p> : <table><tbody>{failed.data.map((m) => <tr key={m.id}><td>{fmt(m.created_at)}</td><td>{m.order_id ?? m.driver_id}</td><td>{m.action} → {m.to_kind}</td><td>{money(m.amount_cents)}</td><td>{m.error}</td></tr>)}</tbody></table>}</div>
+      <div className="card"><h3>Shop debts</h3><p className="small">Taken automatically from the shop's next payment.</p>
+        {!debts.data?.length ? <p className="muted">None.</p> : <table><tbody>{debts.data.map((d) => <tr key={d.id}><td>{d.shop_id}</td><td>owes {d.creditor_kind}</td><td>{money(d.amount_cents - d.settled_cents)}</td><td>{d.order_id}</td></tr>)}</tbody></table>}</div>
+    </>
+  );
+}
+
+createRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>);

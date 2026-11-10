@@ -1,0 +1,10 @@
+# Local development. Copy to .dev.vars, then run `npm run keys >> .dev.vars` for the signing keys.
+APP_ENV=development
+# mock = a built-in stand-in for KiriPay's escrow, so KiriGo runs on its own. Never in production.
+KIRIPAY_MODE=mock
+KIRIPAY_SERVICE_KEY=dev-kiripay-key
+KIRIPOS_SERVICE_KEY=dev-kiripos-key
+# With a local KiriPay (see docs/kiripay-escrow.md):
+# KIRIPAY_MODE=live
+# KIRIPAY_URL=http://localhost:8788
+# KIRIPAY_ESCROW_KEY=<same as KiriPay's KIRIGO_ESCROW_KEY>

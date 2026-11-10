@@ -1,0 +1,26 @@
+{
+  "name": "@kirigo/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler d1 migrations apply kirigo --local && wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 migrations apply kirigo --local",
+    "db:migrate:remote": "wrangler d1 migrations apply kirigo --remote",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "smoke": "node test/smoke.mjs",
+    "keys": "node scripts/keys.mjs"
+  },
+  "dependencies": {
+    "@kirigo/shared": "*",
+    "@noble/curves": "^1.6.0",
+    "hono": "^4.13.17",
+    "jose": "^6.2.16",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "wrangler": "^4.158.0"
+  }
+}

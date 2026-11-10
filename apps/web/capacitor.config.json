@@ -1,0 +1,6 @@
+{
+  "appId": "online.kirigo.driver",
+  "appName": "KiriGo Driver",
+  "webDir": "dist",
+  "server": { "url": "https://kirigo.online/driver/", "cleartext": false }
+}
