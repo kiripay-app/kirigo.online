@@ -50,13 +50,15 @@ app.get('/p/:id', async (c) => {
   return new Response(obj.body, { headers: { 'content-type': obj.httpMetadata?.contentType ?? 'image/jpeg', 'cache-control': 'private, max-age=600' } });
 });
 
-/** Map tiles of South Tarawa (PMTiles in R2), supports range requests. */
+/** Map tiles of South Tarawa (PMTiles in R2), supports range requests. Open map data, so any site (the KiriPay app) may read it. */
+const TILE_CORS = { 'access-control-allow-origin': '*', 'access-control-expose-headers': 'content-range, content-length, etag', 'access-control-allow-headers': 'range, if-match', 'access-control-allow-methods': 'GET, OPTIONS', 'access-control-max-age': '86400' };
+app.options('/tiles/:file', (c) => new Response(null, { status: 204, headers: TILE_CORS }));
 app.get('/tiles/:file', async (c) => {
   const range = c.req.header('range');
   const m = range ? /bytes=(\d+)-(\d*)/.exec(range) : null;
   const obj = await c.env.TILES.get(c.req.param('file'), m ? { range: { offset: Number(m[1]), length: m[2] ? Number(m[2]) - Number(m[1]) + 1 : undefined } } : undefined);
-  if (!obj) return c.text('not found', 404);
-  const h = new Headers({ 'content-type': 'application/octet-stream', 'cache-control': 'public, max-age=86400', 'accept-ranges': 'bytes' });
+  if (!obj) return new Response('not found', { status: 404, headers: TILE_CORS });
+  const h = new Headers({ 'content-type': 'application/octet-stream', 'cache-control': 'public, max-age=86400', 'accept-ranges': 'bytes', etag: obj.httpEtag, ...TILE_CORS });
   if (m && 'range' in obj && obj.range) {
     const r = obj.range as { offset: number; length: number };
     h.set('content-range', `bytes ${r.offset}-${r.offset + r.length - 1}/${obj.size}`);
