@@ -1,57 +1,82 @@
 {
-  "$schema": "../../node_modules/wrangler/config-schema.json",
-  "name": "kirigo",
-  "main": "src/index.ts",
-  "compatibility_date": "2025-09-01",
-  "compatibility_flags": ["nodejs_compat"],
-
-  // driver app, admin and the public landing page are built into ../web/dist (see apps/web)
-  "assets": {
-    "directory": "../web/dist",
-    "binding": "ASSETS",
-    "not_found_handling": "single-page-application",
-    "run_worker_first": true
-  },
-
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "kirigo",
-      // create once: npx wrangler d1 create kirigo   → paste the id here
-      "database_id": "00000000-0000-0000-0000-000000000000",
-      "migrations_dir": "migrations"
-    }
-  ],
-
-  "r2_buckets": [
-    // proof photos, licences, vehicles, shift selfies. Private: served only through short-lived signed links.
-    // create once: npx wrangler r2 bucket create kirigo-photos
-    { "binding": "PHOTOS", "bucket_name": "kirigo-photos" },
-    // Protomaps PMTiles of South Tarawa (see docs/road-data.md). create once: npx wrangler r2 bucket create kirigo-tiles
-    { "binding": "TILES", "bucket_name": "kirigo-tiles" }
-  ],
-
-  "durable_objects": {
-    "bindings": [
-      { "name": "ORDER_TRACKER", "class_name": "OrderTracker" },
-      { "name": "DRIVER_PRESENCE", "class_name": "DriverPresence" }
-    ]
-  },
-  "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["OrderTracker", "DriverPresence"] }
-  ],
-
-  "triggers": { "crons": ["* * * * *"] }
-
-  // Secrets (npx wrangler secret put NAME), never in this file — see README "Secrets":
-  //   SESSION_SECRET           signs KiriGo driver/admin sessions
-  //   HANDOFF_PRIVATE_KEY      Ed25519 key that signs customers' handoff QR codes (npm run keys)
-  //   HANDOFF_PUBLIC_KEY       its public half (also baked into the driver app)
-  //   KIRIPAY_URL              https://kiripay.online
-  //   KIRIPAY_ESCROW_KEY       KiriGo → KiriPay escrow calls (same value set in KiriPay as KIRIGO_ESCROW_KEY)
-  //   KIRIPAY_SERVICE_KEY      KiriPay → KiriGo calls on behalf of customers
-  //   KIRIPOS_SERVICE_KEY      KiriPOS → KiriGo calls on behalf of shops
-  //   KIRIPOS_URL              https://kiripos.online
-  //   KIRIPAY_MODE             "live" in production. "mock" = built-in test stand-in for KiriPay (local dev only)
-  //   APP_ENV                  production | development
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "kirigo",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-09-01",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	// driver app, admin and the public landing page are built into ../web/dist (see apps/web)
+	"assets": {
+		"directory": "../web/dist",
+		"binding": "ASSETS",
+		"not_found_handling": "single-page-application",
+		"run_worker_first": true
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "kirigo",
+			"database_id": "de4b736e-c832-4162-af6e-1f9bbd85fb4b",
+			"migrations_dir": "migrations"
+		}
+	],
+	"r2_buckets": [
+		// proof photos, licences, vehicles, shift selfies. Private: served only through short-lived signed links.
+		// create once: npx wrangler r2 bucket create kirigo-photos
+		{
+			"binding": "PHOTOS",
+			"bucket_name": "kirigo-photos"
+		},
+		// Protomaps PMTiles of South Tarawa (see docs/road-data.md). create once: npx wrangler r2 bucket create kirigo-tiles
+		{
+			"binding": "TILES",
+			"bucket_name": "kirigo-tiles"
+		},
+		{
+			"bucket_name": "kirigo-photos",
+			"binding": "kirigo_photos"
+		},
+		{
+			"bucket_name": "kirigo-tiles",
+			"binding": "kirigo_tiles"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "ORDER_TRACKER",
+				"class_name": "OrderTracker"
+			},
+			{
+				"name": "DRIVER_PRESENCE",
+				"class_name": "DriverPresence"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"OrderTracker",
+				"DriverPresence"
+			]
+		}
+	],
+	"triggers": {
+		"crons": [
+			"* * * * *"
+		]
+	}
+	// Secrets (npx wrangler secret put NAME), never in this file — see README "Secrets":
+	//   SESSION_SECRET           signs KiriGo driver/admin sessions
+	//   HANDOFF_PRIVATE_KEY      Ed25519 key that signs customers' handoff QR codes (npm run keys)
+	//   HANDOFF_PUBLIC_KEY       its public half (also baked into the driver app)
+	//   KIRIPAY_URL              https://kiripay.online
+	//   KIRIPAY_ESCROW_KEY       KiriGo → KiriPay escrow calls (same value set in KiriPay as KIRIGO_ESCROW_KEY)
+	//   KIRIPAY_SERVICE_KEY      KiriPay → KiriGo calls on behalf of customers
+	//   KIRIPOS_SERVICE_KEY      KiriPOS → KiriGo calls on behalf of shops
+	//   KIRIPOS_URL              https://kiripos.online
+	//   KIRIPAY_MODE             "live" in production. "mock" = built-in test stand-in for KiriPay (local dev only)
+	//   APP_ENV                  production | development
 }
