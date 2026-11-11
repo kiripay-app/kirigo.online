@@ -11,7 +11,8 @@ export const TRANSITIONS: Record<OrderStatus, readonly OrderStatus[]> = {
   // NOT_DELIVERED from AT_SHOP = a ride passenger who never showed up
   AT_SHOP: ['PICKED_UP', 'PAID_HELD', 'CANCELLED', 'NOT_DELIVERED'],
   PICKED_UP: ['ARRIVED'],
-  ARRIVED: ['HANDED_OVER', 'NOT_DELIVERED'],
+  // PICKED_UP from ARRIVED = a KiriGo Send parcel nobody could take: the driver brings it back to the sender
+  ARRIVED: ['HANDED_OVER', 'NOT_DELIVERED', 'PICKED_UP'],
   HANDED_OVER: ['ACCEPTED', 'PROBLEM_REPORTED'],
   // keep / ruled for shop → ACCEPTED; refund → REFUNDED. Return/swap/correction run as child orders.
   PROBLEM_REPORTED: ['ACCEPTED', 'REFUNDED'],
@@ -67,6 +68,21 @@ export const STATUS_LABEL: Record<OrderStatus, string> = {
   ARRIVED: 'Driver has arrived',
   HANDED_OVER: 'Delivered, please check your order',
   ACCEPTED: 'Completed',
+  PROBLEM_REPORTED: 'Problem reported',
+  REFUNDED: 'Refunded',
+  NOT_DELIVERED: 'Not delivered',
+  CANCELLED: 'Cancelled',
+};
+
+/** KiriGo Send, as the sender sees it. */
+export const SEND_LABEL: Record<OrderStatus, string> = {
+  PAID_HELD: 'Paid, waiting for the driver',
+  DRIVER_ASSIGNED: 'Driver on the way to collect it',
+  AT_SHOP: 'Driver is at the pickup',
+  PICKED_UP: 'On the way',
+  ARRIVED: 'Driver is at the drop-off',
+  HANDED_OVER: 'Delivered',
+  ACCEPTED: 'Delivered',
   PROBLEM_REPORTED: 'Problem reported',
   REFUNDED: 'Refunded',
   NOT_DELIVERED: 'Not delivered',

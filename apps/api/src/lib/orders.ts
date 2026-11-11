@@ -17,6 +17,7 @@ export interface OrderRow {
   problem_at: string | null; closed_at: string | null; created_at: string;
   service: 'delivery' | 'ride'; seats: number; at_pickup_at: string | null; waiting_cents: number; eta_s: number | null;
   emergency_at: string | null; drop_note: string;
+  send_job_id: string | null; deliver_by: string | null; return_trip: number;
 }
 
 export async function getOrder(db: D1Database, id: string): Promise<OrderRow> {

@@ -80,6 +80,9 @@ export interface Settings {
   quote_valid_min: number;
   driver_signup_open: boolean;
   delivery_open: boolean;
+  // KiriGo Send: person-to-person parcels, drivers bid
+  send_open: boolean;
+  send_bid_max_cents: Cents;       // stops a mistyped bid
   // rides
   rides_open: boolean;
   ride_buffer_cents: Cents;        // refundable extra held with each fare, covers waiting time / late-cancel fee
@@ -122,6 +125,8 @@ export const DEFAULT_SETTINGS: Settings = {
   quote_valid_min: 5,
   driver_signup_open: true,
   delivery_open: false,
+  send_open: true,
+  send_bid_max_cents: 10000,
   rides_open: true,
   ride_buffer_cents: 500,
   ride_free_wait_min: 3,

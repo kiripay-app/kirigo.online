@@ -62,6 +62,8 @@ const FIELDS: { k: string; label: string; kind: 'cents' | 'num' | 'bool' | 'nigh
   { k: 'adults_only_after', label: 'Adults only after (HH:MM)', kind: 'text' },
   { k: 'retention_photos_days', label: 'Keep proof photos (days)', kind: 'num' },
   { k: 'retention_gps_months', label: 'Keep GPS routes (months)', kind: 'num' },
+  { k: 'send_open', label: 'Parcels (KiriGo Send) open', kind: 'bool' },
+  { k: 'send_bid_max_cents', label: 'Highest parcel offer a driver can make $', kind: 'cents' },
   { k: 'rides_open', label: 'Rides open', kind: 'bool' },
   { k: 'ride_buffer_cents', label: 'Refundable extra held with each ride $', kind: 'cents' },
   { k: 'ride_free_wait_min', label: 'Free waiting at pickup (minutes)', kind: 'num' },

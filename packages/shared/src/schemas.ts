@@ -117,3 +117,22 @@ export const rideApplyRequest = z.object({
   roadworthyPhotoId: z.string().min(1),
   rateCard: rideRateCardSchema,
 });
+
+// ---------------------------------------------------------------- KiriGo Send
+
+export const SEND_ITEMS = ['document', 'small', 'medium', 'bulky'] as const;
+export type SendItem = (typeof SEND_ITEMS)[number];
+
+/** A sender posts a parcel job; drivers bid on it. Times are ISO strings. */
+export const sendJobRequest = z.object({
+  pickup: latLng, pickupNote: z.string().max(200).default(''),
+  dropoff: latLng, dropNote: z.string().max(200).default(''),
+  item: z.enum(SEND_ITEMS), description: z.string().max(200).default(''),
+  recipientName: z.string().trim().min(1).max(60),
+  recipientPhone: z.string().trim().max(30).default(''),
+  recipientUserId: z.string().max(64).nullable().default(null),
+  pickupAfter: z.string().datetime(), deliverBy: z.string().datetime(),
+  sourceRef: z.string().min(4).max(64),
+});
+export const sendBidRequest = z.object({ priceCents: z.number().int().positive(), note: z.string().max(140).default('') });
+export const sendChooseRequest = z.object({ bidId: z.string().min(1), holdId: z.string().min(1), sharePhone: z.boolean().default(false) });

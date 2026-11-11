@@ -7,6 +7,7 @@ import { cancelOrder, getOrder, settleAccept, shopAtFault, type OrderRow } from 
 import { continueProblem, returnReceived, shopFault } from '../lib/problems';
 import { unblindOld } from '../lib/ratings';
 import { overtimeCheck } from '../lib/rides';
+import { expireJobs } from '../lib/send';
 import { loadSettings } from '../lib/settings';
 
 const SYSTEM: Actor = { type: 'system', id: null };
@@ -26,6 +27,7 @@ export async function runCron(env: Env, at: Date) {
   const s = await loadSettings(env.DB);
   const jobs: [string, () => Promise<unknown>][] = [
     ['offers', () => expireOffers(env)],
+    ['send jobs past their deadline', () => expireJobs(env)],
     ['money retries', () => retryMoney(env)],
     ['webhooks', () => flushWebhooks(env)],
 

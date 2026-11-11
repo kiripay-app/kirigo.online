@@ -157,7 +157,7 @@ function Pending({ me }: { me: any }) {
 // ------------------------------------------------------------------ home
 
 function Home({ me, reload }: { me: any; reload: () => void }) {
-  const [tab, setTab] = useState<'work' | 'me'>('work');
+  const [tab, setTab] = useState<'work' | 'send' | 'me'>('work');
   const [offers, setOffers] = useState<any[]>([]);
   const [jobs, setJobs] = useState<any[]>([]);
   const [open, setOpen] = useState<string | null>(null);
@@ -218,10 +218,10 @@ function Home({ me, reload }: { me: any; reload: () => void }) {
   return (
     <div className="app">
       <Top right={<span className={`pill ${me.online ? 'good' : ''}`}>{me.online ? 'Online' : 'Offline'}</span>} />
-      <nav className="tabs"><button className={tab === 'work' ? 'on' : ''} onClick={() => setTab('work')}>Work</button><button className={tab === 'me' ? 'on' : ''} onClick={() => setTab('me')}>Me</button></nav>
+      <nav className="tabs"><button className={tab === 'work' ? 'on' : ''} onClick={() => setTab('work')}>Work</button><button className={tab === 'send' ? 'on' : ''} onClick={() => setTab('send')}>Parcels</button><button className={tab === 'me' ? 'on' : ''} onClick={() => setTab('me')}>Me</button></nav>
       {err && <div className="error">{err}</div>}
       {queued > 0 && <div className="notice">{queued} handoff(s) saved offline — they'll send when you have signal. You're paid when they do.</div>}
-      {tab === 'me' ? <Me me={me} reload={reload} /> : (
+      {tab === 'send' ? <SendJobs me={me} /> : tab === 'me' ? <Me me={me} reload={reload} /> : (
         <>
           {me.fee?.due && <div className="notice">Your monthly fee of {money(me.fee.amountCents)} is due. <button onClick={async () => { try { await call('/api/driver/fee/pay', { method: 'POST' }); reload(); } catch (e) { setErr(explain(e)); } }}>Pay from KiriPay</button></div>}
           {!me.online
@@ -230,7 +230,7 @@ function Home({ me, reload }: { me: any; reload: () => void }) {
           {offers.map((o) => <Offer key={o.offerId} o={o} onDone={(job) => { void refresh(); if (job) setOpen(job); }} />)}
           {jobs.map((j) => (
             <div className="card" key={j.id} onClick={() => setOpen(j.id)} style={{ cursor: 'pointer' }}>
-              <div className="between"><b>{j.service === 'ride' ? 'Ride' : j.kind === 'return' ? 'Return' : j.kind === 'correction' ? 'Correct item' : 'Delivery'}{j.service === 'ride' ? '' : ` · ${j.shop.name}`}</b><span className="pill">{j.label}</span></div>
+              <div className="between"><b>{j.service === 'ride' ? 'Ride' : j.send ? `Parcel${j.send.late ? ' · late' : ''}` : j.kind === 'return' ? 'Return' : j.kind === 'correction' ? 'Correct item' : 'Delivery'}{j.service === 'ride' || j.send ? '' : ` · ${j.shop.name}`}</b><span className="pill">{j.label}</span></div>
               <p className="small">{money(j.deliveryCents)} · {(j.distanceM / 1000).toFixed(1)} km</p>
             </div>
           ))}
@@ -294,6 +294,7 @@ function Job({ id, onClose }: { id: string; onClose: () => void }) {
 
   if (!o) return <div className="app"><Top />{err ? <div className="error">{err}</div> : <p>Loading…</p>}</div>;
   if (o.service === 'ride') return <RideJob o={o} setO={setO} onClose={onClose} />;
+  if (o.send) return <SendJob o={o} setO={setO} err={err} setErr={setErr} mode={mode} setMode={setMode} step={step} giveBack={giveBack} notDelivered={notDelivered} load={load} onClose={onClose} />;
   const isReturn = o.kind === 'return';
   const order = ['DRIVER_ASSIGNED', 'AT_SHOP', 'PICKED_UP', 'ARRIVED', 'HANDED_OVER'];
   const at = order.indexOf(o.status);
@@ -329,6 +330,102 @@ function Job({ id, onClose }: { id: string; onClose: () => void }) {
       )}
       {['DRIVER_ASSIGNED', 'AT_SHOP'].includes(o.status) && <button className="secondary block" style={{ marginTop: 16 }} onClick={giveBack}>Give job back</button>}
       {o.status === 'HANDED_OVER' && <Rate orderId={o.id} isReturn={isReturn} onDone={onClose} />}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ KiriGo Send
+
+const ITEM: Record<string, string> = { document: 'Documents', small: 'Small parcel', medium: 'Medium parcel', bulky: 'Bulky item' };
+const when = (iso: string) => new Date(iso).toLocaleString('en-AU', { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+const kmText = (m: number) => `${(m / 1000).toFixed(1)} km`;
+
+/** Open parcel jobs. Drivers set their own price; the sender chooses. */
+function SendJobs({ me }: { me: any }) {
+  const [jobs, setJobs] = useState<any[] | null>(null);
+  const [err, setErr] = useState('');
+  const load = useCallback(async () => {
+    try { const p = lastPos; setJobs(await call(`/api/driver/send/jobs${p ? `?lat=${p.lat}&lng=${p.lng}` : ''}`)); } catch (e) { setErr(explain(e)); }
+  }, []);
+  useEffect(() => { void load(); const t = setInterval(load, 20_000); return () => clearInterval(t); }, [load]);
+  if (me.services && !me.services.deliveries) return <p className="muted">Switch on deliveries in Me → Services to bid on parcels.</p>;
+  return (
+    <>
+      <p className="small">People sending documents and parcels. Offer your price; if the sender picks you, the job appears in Work and you're paid at the handoff.</p>
+      {err && <div className="error">{err}</div>}
+      {jobs === null ? <p>Loading…</p> : jobs.length === 0 ? <p className="muted">No parcel jobs open right now.</p> : jobs.map((j) => <SendJobCard key={j.id} j={j} onChange={load} />)}
+    </>
+  );
+}
+
+function SendJobCard({ j, onChange }: { j: any; onChange: () => void }) {
+  const [price, setPrice] = useState(j.myBid ? (j.myBid.priceCents / 100).toFixed(2) : '');
+  const [note, setNote] = useState(j.myBid?.note ?? '');
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  const bid = async () => {
+    const cents = Math.round(Number(price) * 100);
+    if (!Number.isFinite(cents) || cents <= 0) { setErr('Enter your price'); return; }
+    setBusy(true); setErr('');
+    try { await call(`/api/driver/send/jobs/${j.id}/bid`, { body: { priceCents: cents, note } }); onChange(); } catch (e) { setErr(explain(e)); } finally { setBusy(false); }
+  };
+  const withdraw = async () => { try { await call(`/api/driver/send/jobs/${j.id}/bid`, { method: 'DELETE' }); setPrice(''); onChange(); } catch (e) { setErr(explain(e)); } };
+  return (
+    <div className="card">
+      <div className="between"><b>{ITEM[j.item] ?? j.item}</b><span className="pill">{j.bids} {j.bids === 1 ? 'offer' : 'offers'}</span></div>
+      {j.description && <p className="small">{j.description}</p>}
+      <p className="small">{kmText(j.distanceM)} trip{j.toPickupM != null ? ` · pickup ${kmText(j.toPickupM)} from you` : ''}</p>
+      <p className="small">Collect after {when(j.pickupAfter)} · deliver by <b>{when(j.deliverBy)}</b></p>
+      {j.myBid && <p className="small">Your offer: <b>{money(j.myBid.priceCents)}</b>. You'll hear if the sender picks you.</p>}
+      <div className="row">
+        <input inputMode="decimal" aria-label="Your price in dollars" placeholder="Your price $" value={price} onChange={(e) => setPrice(e.target.value)} style={{ maxWidth: 130 }} />
+        <input aria-label="Note for the sender (optional)" placeholder="Note (optional)" maxLength={140} value={note} onChange={(e) => setNote(e.target.value)} />
+      </div>
+      {err && <div className="error">{err}</div>}
+      <div className="row" style={{ marginTop: 8 }}>
+        {j.myBid && <button className="secondary" onClick={withdraw}>Withdraw</button>}
+        <button onClick={bid} disabled={busy}>{j.myBid ? 'Update offer' : 'Offer this price'}</button>
+      </div>
+    </div>
+  );
+}
+
+function SendJob({ o, err, mode, setMode, step, giveBack, notDelivered, load, onClose }: any) {
+  const sd = o.send;
+  const order = ['DRIVER_ASSIGNED', 'AT_SHOP', 'PICKED_UP', 'ARRIVED', 'ACCEPTED'];
+  const at = order.indexOf(o.status === 'HANDED_OVER' ? 'ACCEPTED' : o.status);
+  if (mode === 'handoff') return <Handoff o={o} onDone={() => { setMode('view'); void load(); }} onCancel={() => setMode('view')} />;
+  return (
+    <div className="app">
+      <Top right={<button className="secondary" onClick={onClose}>Back</button>} />
+      <div className="steps">{order.map((s, i) => <span key={s} className={i <= at ? 'on' : ''} />)}</div>
+      <h2>{sd.returning && o.status !== 'ACCEPTED' ? 'Bring it back to the sender' : o.label}</h2>
+      {sd.late && <div className="notice">Past the deliver-by time ({when(sd.deliverBy)}). Please get it there as soon as you can.</div>}
+      {err && <div className="error">{err}</div>}
+      <div className="card">
+        <div className="between"><b>Collect from the sender</b><a href={mapsLink(o.shop.pickup)} target="_blank" rel="noreferrer">Directions</a></div>
+        {sd.pickupNote && <p className="small">{sd.pickupNote}</p>}
+        <p className="small">{ITEM[sd.item] ?? sd.item}{sd.description ? ` · ${sd.description}` : ''} · after {when(sd.pickupAfter)}</p>
+      </div>
+      <div className="card">
+        <div className="between"><b>{sd.returning ? 'Back to the sender' : `Deliver to ${sd.recipient?.name ?? 'the recipient'}`}</b><a href={mapsLink(o.dropoff)} target="_blank" rel="noreferrer">Directions</a></div>
+        {o.dropoff.landmark && <p className="small">{o.dropoff.landmark}</p>}
+        {!sd.returning && sd.recipient?.phone && <p className="small"><a href={`tel:${sd.recipient.phone}`}>Call {sd.recipient.name}</a></p>}
+        <p className="small">By {when(sd.deliverBy)} · you earn {money(o.deliveryCents)}</p>
+        <p className="small">{sd.returning ? 'The sender shows you their code to get it back.' : 'The recipient shows you a 4-digit code or QR. Take the photo at the handoff.'}</p>
+      </div>
+      {o.status === 'DRIVER_ASSIGNED' && <button className="block" onClick={() => step('at_pickup')}>I'm at the pickup</button>}
+      {o.status === 'AT_SHOP' && <button className="block" onClick={() => step('picked_up')}>I have the parcel</button>}
+      {o.status === 'PICKED_UP' && <button className="block" onClick={() => step('arrived')}>I've arrived</button>}
+      {(o.status === 'ARRIVED' || o.status === 'PICKED_UP') && <button className="block" style={{ marginTop: 8 }} onClick={() => setMode('handoff')}>Hand over</button>}
+      {o.status === 'ARRIVED' && (
+        <div className="row" style={{ marginTop: 8 }}>
+          <button className="secondary" onClick={() => notDelivered('customer_absent')}>{sd.returning ? 'Sender not there' : 'Nobody to take it'}</button>
+          <button className="secondary" onClick={() => notDelivered('no_adult')}>No adult (after 10 pm)</button>
+        </div>
+      )}
+      {o.status === 'ARRIVED' && !sd.returning && <p className="small">If nobody can take it, you're paid for the trip and bring it back to the sender.</p>}
+      {['DRIVER_ASSIGNED', 'AT_SHOP'].includes(o.status) && <button className="secondary block" style={{ marginTop: 16 }} onClick={giveBack}>Give job back</button>}
+      {(o.status === 'ACCEPTED' || o.status === 'HANDED_OVER') && <RideRate orderId={o.id} onDone={onClose} parcel />}
     </div>
   );
 }
@@ -392,13 +489,13 @@ function RideJob({ o, setO, onClose }: { o: any; setO: (o: any) => void; onClose
   );
 }
 
-function RideRate({ orderId, onDone }: { orderId: string; onDone: () => void }) {
+function RideRate({ orderId, onDone, parcel }: { orderId: string; onDone: () => void; parcel?: boolean }) {
   const [stars, setStars] = useState(5);
   const send = async () => { try { await call(`/api/driver/jobs/${orderId}/rate`, { body: { ratings: [{ to: 'customer', stars }] } }); } catch { /* optional */ } onDone(); };
   return (
     <div className="card" style={{ marginTop: 16 }}>
-      <h3>Ride complete. You've been paid.</h3>
-      <label>Rate the rider</label>
+      <h3>{parcel ? 'Parcel delivered' : 'Ride complete'}. You've been paid.</h3>
+      <label>Rate the {parcel ? 'sender' : 'rider'}</label>
       <div className="row">{[1, 2, 3, 4, 5].map((n) => <button key={n} className={n <= stars ? '' : 'secondary'} onClick={() => setStars(n)}>★</button>)}</div>
       <button className="block" style={{ marginTop: 12 }} onClick={send}>Send rating</button>
     </div>

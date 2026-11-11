@@ -1,4 +1,4 @@
-import { adultsOnly, driverApplyRequest, gpsPoint, handoffRequest, rateCardSchema, rateRequest, rideApplyRequest, rideRateCardSchema, validateRateCard } from '@kirigo/shared';
+import { adultsOnly, driverApplyRequest, sendBidRequest, gpsPoint, handoffRequest, rateCardSchema, rateRequest, rideApplyRequest, rideRateCardSchema, validateRateCard } from '@kirigo/shared';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Actor, AppEnv, Env } from '../env';
@@ -10,6 +10,7 @@ import { claimPhoto, savePhoto, type PhotoKind } from '../lib/photos';
 import { submitRatings } from '../lib/ratings';
 import { board, emergency, endRide, noShow, watchRide } from '../lib/rides';
 import { loadSettings } from '../lib/settings';
+import { driverDropped, isSend, openJobs, placeBid, returnToSender, sendDelivered, withdrawBid } from '../lib/send';
 import { chargeMonthlyFee, feeStatus } from '../lib/fees';
 import { orderView } from '../lib/views';
 import { ApiError, body, newId, nowIso, plusMs, takeAttempt } from '../lib/util';
@@ -229,6 +230,11 @@ d.post('/jobs/:id/status', async (c) => {
 d.post('/jobs/:id/release', async (c) => {
   const o = await myJob(c, c.req.param('id'));
   if (!['DRIVER_ASSIGNED', 'AT_SHOP'].includes(o.status)) throw new ApiError('TOO_LATE', 409);
+  if (isSend(o)) {
+    await driverDropped(c.env, o, c.get('actor'));
+    await c.env.DB.prepare('UPDATE drivers SET accept_then_cancel = accept_then_cancel + 1 WHERE id=?').bind(meId(c)).run();
+    return c.json({ ok: true });
+  }
   await transition(c.env, o, 'PAID_HELD', c.get('actor'), { set: { driver_id: null, assigned_at: null }, data: { reason: 'driver_released' } });
   await c.env.DB.prepare('UPDATE drivers SET accept_then_cancel = accept_then_cancel + 1 WHERE id=?').bind(meId(c)).run();
   await nextDriver(c.env, o.id, 'dropped');
@@ -266,6 +272,7 @@ async function doHandoff(env: Env, actor: Actor, o: OrderRow, b: HandoffInput, o
     },
   });
   await payDriver(env, next);
+  if (isSend(next)) await sendDelivered(env, next);
   // the GPS route ends here
   const stub = env.ORDER_TRACKER.get(env.ORDER_TRACKER.idFromName(o.parent_order_id ?? o.id));
   await stub.fetch('https://do/finish', { method: 'POST', body: JSON.stringify({ orderId: o.id }) }).catch(() => {});
@@ -306,6 +313,12 @@ d.post('/jobs/:id/not-delivered', async (c) => {
   const arrived = await c.env.DB.prepare("SELECT at FROM order_events WHERE order_id=? AND type='status:ARRIVED' ORDER BY id DESC LIMIT 1").bind(o.id).first<{ at: string }>();
   if (arrived && Date.now() - Date.parse(arrived.at) < s.door_wait_min * 60_000) throw new ApiError('WAIT_A_LITTLE_LONGER', 409, { minutes: s.door_wait_min });
   await logPos(c.env, o.id, c.get('actor'), b);
+  if (isSend(o)) {
+    // first time: take it back to the sender. Already on the way back and nobody there either: KiriGo's team follows up.
+    if (!o.return_trip) return c.json(await orderView(c.env, await returnToSender(c.env, o, c.get('actor'), b.reason), c.get('actor')));
+    await transition(c.env, o, 'NOT_DELIVERED', c.get('actor'), { set: { closed_at: nowIso() }, data: { reason: b.reason, parcelWithDriver: true } });
+    return c.json({ ok: true });
+  }
   await notDelivered(c.env, o, c.get('actor'), b.reason);
   return c.json({ ok: true });
 });
@@ -408,6 +421,21 @@ d.post('/jobs/:id/emergency', async (c) => {
   return c.json({ ok: true });
 });
 
+// ---------------------------------------------------------------- KiriGo Send: bid on parcel jobs
+
+d.get('/send/jobs', async (c) => {
+  const lat = Number(c.req.query('lat')), lng = Number(c.req.query('lng'));
+  return c.json(await openJobs(c.env, meId(c), Number.isFinite(lat) && Number.isFinite(lng) && lat && lng ? { lat, lng } : null));
+});
+d.post('/send/jobs/:id/bid', async (c) => {
+  const b = await body(c, sendBidRequest);
+  return c.json(await placeBid(c.env, meId(c), c.req.param('id'), b.priceCents, b.note));
+});
+d.delete('/send/jobs/:id/bid', async (c) => {
+  await withdrawBid(c.env, meId(c), c.req.param('id'));
+  return c.json({ ok: true });
+});
+
 driver.route('/', d);
 
 // ------------------------------------------------------------------ helpers
@@ -422,3 +450,4 @@ async function logPos(env: Env, orderId: string, actor: Actor, p: { lat: number;
 }
 
 export { pushToDriver };
+

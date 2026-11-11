@@ -1,4 +1,4 @@
-import { RIDE_LABEL, STATUS_LABEL } from '@kirigo/shared';
+import { RIDE_LABEL, SEND_LABEL, STATUS_LABEL } from '@kirigo/shared';
 import type { Env } from '../env';
 import type { OrderRow } from './orders';
 import { nowIso } from './util';
@@ -8,14 +8,18 @@ import { nowIso } from './util';
  *  - the live screens (customer, shop, driver) through the order's Durable Object
  *  - KiriPay (customer app notifications) and KiriPOS (shop Orders page) through signed, retried webhooks
  */
-export async function notify(env: Env, o: Pick<OrderRow, 'id' | 'status' | 'shop_id' | 'customer_id' | 'driver_id' | 'source' | 'source_ref' | 'kind' | 'parent_order_id'> & { service?: string }, event: string) {
+export async function notify(env: Env, o: Pick<OrderRow, 'id' | 'status' | 'shop_id' | 'customer_id' | 'driver_id' | 'source' | 'source_ref' | 'kind' | 'parent_order_id'> & { service?: string; send_job_id?: string | null }, event: string) {
   const ride = o.service === 'ride';
   // rides: KiriPay also tells the rider's Trip buddies
   const buddies = ride
     ? ((await env.DB.prepare('SELECT user_id FROM trip_buddies WHERE order_id=? AND stopped_at IS NULL').bind(o.id).all<{ user_id: string }>()).results ?? []).map((r) => r.user_id)
     : [];
+  // KiriGo Send: the recipient, if they are a KiriPay member, hears too
+  const recipient = o.send_job_id
+    ? (await env.DB.prepare('SELECT recipient_user_id FROM send_jobs WHERE id=?').bind(o.send_job_id).first<{ recipient_user_id: string | null }>())?.recipient_user_id ?? null
+    : null;
   const msg = {
-    type: 'order', event, service: o.service ?? 'delivery', buddies, orderId: o.id, parentOrderId: o.parent_order_id, kind: o.kind, status: o.status, label: (ride ? RIDE_LABEL : STATUS_LABEL)[o.status],
+    type: 'order', event, service: o.send_job_id ? 'send' : o.service ?? 'delivery', buddies, orderId: o.id, parentOrderId: o.parent_order_id, kind: o.kind, status: o.status, label: (ride ? RIDE_LABEL : o.send_job_id ? SEND_LABEL : STATUS_LABEL)[o.status], recipient,
     shopId: o.shop_id, customerId: o.customer_id, driverId: o.driver_id, source: o.source, sourceRef: o.source_ref, at: nowIso(),
   };
   try {
@@ -26,8 +30,8 @@ export async function notify(env: Env, o: Pick<OrderRow, 'id' | 'status' | 'shop
   const at = nowIso();
   await env.DB.batch([
     env.DB.prepare('INSERT INTO webhooks_out (target, body_json, next_try_at) VALUES (?,?,?)').bind('kiripay', body, at),
-    // shops never hear about rides
-    ...(ride ? [] : [env.DB.prepare('INSERT INTO webhooks_out (target, body_json, next_try_at) VALUES (?,?,?)').bind('kiripos', body, at)]),
+    // shops never hear about rides or parcels between people
+    ...(ride || o.send_job_id ? [] : [env.DB.prepare('INSERT INTO webhooks_out (target, body_json, next_try_at) VALUES (?,?,?)').bind('kiripos', body, at)]),
   ]);
 }
 

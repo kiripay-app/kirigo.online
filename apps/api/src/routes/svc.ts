@@ -1,4 +1,4 @@
-import { createOrderRequest, createRideRequest, problemRequest, quoteRequest, rateRequest, rideQuoteRequest, roadDistance, PRE_PICKUP } from '@kirigo/shared';
+import { createOrderRequest, createRideRequest, problemRequest, sendChooseRequest, sendJobRequest, quoteRequest, rateRequest, rideQuoteRequest, roadDistance, PRE_PICKUP } from '@kirigo/shared';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { AppEnv } from '../env';
@@ -13,6 +13,7 @@ import { answerDiscount, correctionAccepted, reportProblem } from '../lib/proble
 import { submitRatings } from '../lib/ratings';
 import { addBuddies, alertsFor, cancelRide, emergency, following, isBuddy, makeRideQuote, priceRideDrivers, RIDE_SHOP, stopSharing } from '../lib/rides';
 import { loadSettings } from '../lib/settings';
+import { cancelJob, chooseBid, getJob, incoming, isRecipient, isSend, jobView, postJob } from '../lib/send';
 import { orderView } from '../lib/views';
 import { ApiError, body, newId, nowIso } from '../lib/util';
 
@@ -86,7 +87,7 @@ svc.post('/orders', async (c) => {
 });
 
 svc.get('/orders', async (c) => {
-  const { results } = await c.env.DB.prepare("SELECT * FROM orders WHERE customer_id=? AND kind='delivery' AND service='delivery' ORDER BY created_at DESC LIMIT 50").bind(me(c)).all<OrderRow>();
+  const { results } = await c.env.DB.prepare("SELECT * FROM orders WHERE customer_id=? AND kind='delivery' AND service='delivery' AND send_job_id IS NULL ORDER BY created_at DESC LIMIT 50").bind(me(c)).all<OrderRow>();
   return c.json(await Promise.all((results ?? []).map((o) => orderView(c.env, o, c.get('actor')))));
 });
 
@@ -107,7 +108,7 @@ svc.get('/orders/:id/track-ticket', async (c) => {
 /** "Received, all correct": the shop is paid. */
 svc.post('/orders/:id/accept', async (c) => {
   const o = await mine(c, c.req.param('id'));
-  if (o.service === 'ride') throw new ApiError('NOT_A_DELIVERY', 409);
+  if (o.service === 'ride' || isSend(o)) throw new ApiError('NOT_A_DELIVERY', 409);
   if (o.status !== 'HANDED_OVER') throw new ApiError('NOT_DELIVERED_YET', 409);
   if (o.kind === 'correction') await correctionAccepted(c.env, o, c.get('actor'));
   else if (o.kind === 'delivery') await settleAccept(c.env, o, c.get('actor'), { shopAtFault: false });
@@ -117,7 +118,7 @@ svc.post('/orders/:id/accept', async (c) => {
 
 svc.post('/orders/:id/problem', async (c) => {
   const o = await mine(c, c.req.param('id'));
-  if (o.service === 'ride') throw new ApiError('NOT_A_DELIVERY', 409);
+  if (o.service === 'ride' || isSend(o)) throw new ApiError('NOT_A_DELIVERY', 409);
   return c.json(await reportProblem(c.env, o, c.get('actor'), await body(c, problemRequest)));
 });
 
@@ -141,6 +142,7 @@ svc.post('/orders/:id/cancel', async (c) => {
 /** Drivers available right now for an order that needs one (no one accepted, or a return/correction trip). */
 svc.get('/orders/:id/drivers', async (c) => {
   const o = await mine(c, c.req.param('id'));
+  if (isSend(o)) throw new ApiError('NOT_CHOOSING', 409);
   if (o.status !== 'PAID_HELD' || o.offer_driver_id) throw new ApiError('NOT_CHOOSING', 409);
   const s = await loadSettings(c.env.DB);
   const sort = (c.req.query('sort') as 'closest' | 'cheapest' | 'top_rated') || 'closest';
@@ -168,6 +170,7 @@ async function affordable(c: any, o: OrderRow, all: QuoteOption[]): Promise<Quot
 
 svc.post('/orders/:id/choose-driver', async (c) => {
   const o = await mine(c, c.req.param('id'));
+  if (isSend(o)) throw new ApiError('NOT_CHOOSING', 409);
   const b = await body(c, z.object({ driverId: z.string() }));
   if (o.status !== 'PAID_HELD' || o.offer_driver_id) throw new ApiError('NOT_CHOOSING', 409);
   const s = await loadSettings(c.env.DB);
@@ -347,4 +350,70 @@ svc.post('/following/:id/alert', async (c) => {
   if (!(await isBuddy(c.env, id, me(c)))) throw new ApiError('ORDER_NOT_FOUND', 404);
   await emergency(c.env, await getOrder(c.env.DB, id), 'buddy', null);
   return c.json({ ok: true });
+});
+
+
+// ================================================================== KiriGo Send (customer side, via KiriPay)
+
+/** Post a parcel job. KiriPay calls this itself (it fills in recipientUserId), not the member's app directly. */
+svc.post('/send/jobs', async (c) => {
+  const b = await body(c, sendJobRequest);
+  const id = await postJob(c.env, me(c), b);
+  return c.json(await jobView(c.env, await getJob(c.env, id)), 201);
+});
+
+svc.get('/send/jobs', async (c) => {
+  const { results } = await c.env.DB.prepare("SELECT * FROM send_jobs WHERE customer_id=? AND (status='open' OR closed_at > ?) ORDER BY created_at DESC LIMIT 30")
+    .bind(me(c), new Date(Date.now() - 7 * 86400_000).toISOString()).all<any>();
+  const out = [];
+  for (const j of results ?? []) {
+    const o = j.order_id ? await getOrder(c.env.DB, j.order_id) : null;
+    out.push({ ...(await jobView(c.env, j)), order: o ? { id: o.id, status: o.status } : null });
+  }
+  return c.json(out);
+});
+
+async function myJob(c: any, id: string) {
+  const j = await getJob(c.env, id);
+  if (j.customer_id !== me(c)) throw new ApiError('JOB_NOT_FOUND', 404);
+  return j;
+}
+svc.get('/send/jobs/:id', async (c) => c.json(await jobView(c.env, await myJob(c, c.req.param('id')))));
+svc.post('/send/jobs/:id/cancel', async (c) => {
+  const j = await myJob(c, c.req.param('id'));
+  await cancelJob(c.env, j);
+  return c.json(await jobView(c.env, await getJob(c.env, j.id)));
+});
+
+/** The sender picked a bid and has ALREADY paid exactly that price into a KiriPay hold. */
+svc.post('/send/jobs/:id/choose', async (c) => {
+  const j = await myJob(c, c.req.param('id'));
+  const b = await body(c, sendChooseRequest);
+  const bid = await c.env.DB.prepare('SELECT price_cents FROM send_bids WHERE id=? AND job_id=? AND withdrawn_at IS NULL').bind(b.bidId, j.id).first<{ price_cents: number }>();
+  if (!bid) throw new ApiError('BID_GONE', 409);
+  const kp = kiripay(c.env);
+  const hold = await kp.getHold(b.holdId);
+  if (!hold || hold.payerId !== j.customer_id) throw new ApiError('HOLD_NOT_FOUND', 404);
+  if (hold.status !== 'open' || hold.remaining !== bid.price_cents || hold.amount !== bid.price_cents) throw new ApiError('HOLD_AMOUNT_MISMATCH', 409, { expected: bid.price_cents, held: hold.remaining });
+  const o = await chooseBid(c.env, j, b.bidId, b.holdId, b.sharePhone, c.get('actor'), async (orderId) => {
+    const bound = await kp.bindHold(b.holdId, orderId);
+    if (!bound.ok) throw new ApiError(bound.code, 409);
+  });
+  return c.json(await orderView(c.env, o, c.get('actor')), 201);
+});
+
+/** Parcels coming to me (when the sender's recipient phone/email matched my KiriPay account). */
+svc.get('/incoming', async (c) => c.json(await incoming(c.env, me(c))));
+async function forMe(c: any, id: string) {
+  if (!(await isRecipient(c.env, id, me(c)))) throw new ApiError('ORDER_NOT_FOUND', 404);
+  return getOrder(c.env.DB, id);
+}
+svc.get('/incoming/:id/handoff', async (c) => {
+  const o = await forMe(c, c.req.param('id'));
+  if (o.return_trip || !['DRIVER_ASSIGNED', 'AT_SHOP', 'PICKED_UP', 'ARRIVED'].includes(o.status)) throw new ApiError('NOT_ON_THE_WAY', 409);
+  return c.json({ qr: handoffToken(c.env, o.id), code: await handoffCode(c.env, o.id) }, 200, { 'cache-control': 'no-store' });
+});
+svc.get('/incoming/:id/position', async (c) => {
+  const o = await forMe(c, c.req.param('id'));
+  return c.json({ status: o.status, last: o.return_trip ? null : await lastPosition(c.env, o.id) });
 });

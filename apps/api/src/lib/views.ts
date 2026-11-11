@@ -1,4 +1,4 @@
-import { displayRating, RIDE_LABEL, STATUS_LABEL } from '@kirigo/shared';
+import { displayRating, RIDE_LABEL, SEND_LABEL, STATUS_LABEL } from '@kirigo/shared';
 import type { Actor, Env } from '../env';
 import type { OrderRow } from './orders';
 import { canSeePhoto, photoUrl, type PhotoKind } from './photos';
@@ -32,7 +32,8 @@ export async function orderView(env: Env, o: OrderRow, viewer: Actor) {
   void customerPhone;
   return {
     id: o.id, kind: o.kind, service: o.service, parentOrderId: o.parent_order_id, status: o.status,
-    label: o.service === 'ride' ? RIDE_LABEL[o.status] : LABEL_BY_KIND[o.kind]?.[o.status] ?? STATUS_LABEL[o.status],
+    label: o.service === 'ride' ? RIDE_LABEL[o.status] : o.send_job_id ? (o.return_trip && o.status !== 'ACCEPTED' ? 'Coming back to you' : o.return_trip ? 'Returned to you' : SEND_LABEL[o.status]) : LABEL_BY_KIND[o.kind]?.[o.status] ?? STATUS_LABEL[o.status],
+    send: o.send_job_id ? await sendBlock(env, o, viewer) : undefined,
     ride: o.service === 'ride' ? {
       seats: o.seats, fareCents: o.delivery_cents, bufferCents: o.goods_cents, waitingCents: o.waiting_cents,
       pickup: driverMayLocate ? { lat: o.pickup_lat, lng: o.pickup_lng, note: o.landmark } : { area: approxArea(o.pickup_lat, o.pickup_lng) },
@@ -60,4 +61,17 @@ export async function orderView(env: Env, o: OrderRow, viewer: Actor) {
 /** Rough area for drivers before they accept: rounded to ~1 km so the exact house isn't revealed. */
 function approxArea(lat: number, lng: number) {
   return { lat: Math.round(lat * 100) / 100, lng: Math.round(lng * 100) / 100 };
+}
+
+/** KiriGo Send details: the recipient (name and phone go to the driver only once they have the job), item, time frame. */
+async function sendBlock(env: Env, o: OrderRow, viewer: Actor) {
+  const j = await env.DB.prepare('SELECT item, description, recipient_name, recipient_phone, pickup_after, deliver_by, pickup_note FROM send_jobs WHERE id=?').bind(o.send_job_id).first<any>();
+  if (!j) return null;
+  const mayKnow = viewer.type !== 'driver' || o.driver_id === viewer.id;
+  return {
+    item: j.item, description: j.description, pickupAfter: j.pickup_after, deliverBy: j.deliver_by, returning: !!o.return_trip,
+    late: !!o.deliver_by && o.deliver_by < new Date().toISOString() && !['HANDED_OVER', 'ACCEPTED', 'CANCELLED', 'REFUNDED', 'NOT_DELIVERED'].includes(o.status),
+    recipient: mayKnow ? { name: j.recipient_name, phone: j.recipient_phone } : null,
+    pickupNote: j.pickup_note,
+  };
 }
