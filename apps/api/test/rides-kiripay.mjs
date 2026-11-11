@@ -55,9 +55,12 @@ async function main() {
   dt = ap.token;
   await admin(`/drivers/${ap.driverId}/approve`, { method: 'POST', body: { licenceSeen: true, licenceMatchesKyc: true, licenceExpiry: '2031-01-01' } });
   const rw = (await pic(drv, '/photos?kind=vehicle')).photoId;
+  const noFace = await admin(`/drivers/${ap.driverId}/rides/approve`, { method: 'POST', body: { roadworthyChecked: true, override: true } }).then(() => false, (e) => String(e).includes('FACE_PHOTO_NEEDED'));
+  await admin(`/drivers/${ap.driverId}/face-photo`, { method: 'POST', raw: jpeg, headers: { 'content-type': 'image/jpeg' } });
   await drv('/rides/apply', { method: 'POST', body: { seats: 4, roadworthyPhotoId: rw, rateCard: { baseCents: 300, perKmCents: 150, minimumCents: 500, nightCents: 0, waitPerMinCents: 50, cancelCents: 300 } } });
   await admin(`/drivers/${ap.driverId}/rides/approve`, { method: 'POST', body: { roadworthyChecked: true, override: true, note: 'test' } });
   await drv('/services', { method: 'PUT', body: { deliveries: false, rides: true } });
+  ok(noFace, 'rides need a face photo cut from the licence first');
   await drv('/online', { method: 'POST', body: { selfiePhotoId: (await pic(drv, '/photos?kind=selfie')).photoId, lat: PICKUP.lat + 0.001, lng: PICKUP.lng } });
   ok(true, `ride driver ${ap.driverId} approved and online`);
 
@@ -88,6 +91,9 @@ async function main() {
   ok(f1.length === 1 && f1[0].riderFirstName === 'Tekaai' && f1[0].driver?.vehicle?.plate === `C ${run.slice(-3)}`, 'friend sees the rider (first name from KiriPay) and the driver and plate');
   ok(!JSON.stringify(f1).match(/Cents|"code"/), 'friend sees no money and no boarding code');
 
+  const fc = (await cust(`/kirigo/svc/orders/${id}`)).ride.faceCheck;
+  ok(fc?.approvedUrl && fc?.todayUrl, 'rider sees the approved face and today\'s selfie before boarding');
+  ok(!JSON.stringify(f1).includes('faceCheck'), 'friend does not get the face photos');
   await drv(`/jobs/${id}/status`, { method: 'POST', body: { status: 'at_pickup', ...PICKUP } });
   const bc = await cust(`/kirigo/svc/orders/${id}/handoff`);
   ok(/^\d{4}$/.test(bc.code) && bc.qr, 'rider gets the boarding code through KiriPay');
@@ -112,6 +118,25 @@ async function main() {
   ok(f2.length === 1 && f2[0].arrivedSafely, 'friend sees "arrived safely"');
   await cust(`/kirigo/svc/orders/${id}/rate`, { method: 'POST', body: { ratings: [{ to: 'driver', stars: 5 }] } });
   ok(true, 'rider rated the driver');
+
+  // the face check: two riders say it isn't the same person → full refunds, rides paused
+  for (const n of [1, 2]) {
+    const q2 = await cust('/kirigo/svc/rides/quotes', { method: 'POST', body: { pickup: PICKUP, dropoff: DEST, seats: 1 } });
+    const o2 = q2.options.find((o) => o.driverId === ap.driverId);
+    const b0 = balance('acc_cust');
+    const p2 = await cust('/kirigo/rides', { method: 'POST', body: { quoteId: q2.quoteId, driverId: ap.driverId, fareCents: o2.priceCents, bufferCents: q2.bufferCents, key: `fm${n}${run}` } });
+    const of2 = (await drv('/offers')).find((o) => o.orderId === p2.order.id);
+    await drv(`/offers/${of2.offerId}/accept`, { method: 'POST' });
+    await new Promise((r) => setTimeout(r, n === 1 ? 2500 : 0));
+    const c2 = await cust(`/kirigo/svc/orders/${p2.order.id}/face-mismatch`, { method: 'POST', body: { reason: n === 1 ? 'unclear' : 'no_match' } });
+    ok(c2.status === 'CANCELLED' && balance('acc_cust') === b0, `face check cancel ${n}: every cent back, even after the free-cancel minutes`);
+  }
+  const reports = await admin('/face-reports');
+  ok(reports.filter((r) => r.driver_id === ap.driverId).length === 2 && reports.some((r) => r.driver_id === ap.driverId && r.paused_driver), 'KiriGo team sees both reports');
+  const paused = (await admin('/rides/applications?status=suspended')).some((d) => d.id === ap.driverId);
+  ok(paused, "second report pauses the driver's rides");
+  const tooLate = await cust(`/kirigo/svc/orders/${id}/face-mismatch`, { method: 'POST', body: { reason: 'no_match' } }).then(() => false, (e) => String(e).includes('TOO_LATE'));
+  ok(tooLate, 'no face-check cancel after the trip');
 
   const sum = sql('SELECT SUM(balance) AS s FROM accounts')[0].s;
   ok(sum === 0, 'KiriPay ledger still sums to zero');

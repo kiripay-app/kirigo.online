@@ -11,7 +11,7 @@ import { cancelOrder, eventStmt, getOrder, settleAccept, type OrderRow } from '.
 import { savePhoto } from '../lib/photos';
 import { answerDiscount, correctionAccepted, reportProblem } from '../lib/problems';
 import { submitRatings } from '../lib/ratings';
-import { addBuddies, alertsFor, cancelRide, emergency, following, isBuddy, makeRideQuote, priceRideDrivers, RIDE_SHOP, stopSharing } from '../lib/rides';
+import { addBuddies, alertsFor, cancelRide, emergency, faceMismatch, following, isBuddy, makeRideQuote, priceRideDrivers, RIDE_SHOP, stopSharing } from '../lib/rides';
 import { loadSettings } from '../lib/settings';
 import { cancelJob, chooseBid, getJob, incoming, isRecipient, isSend, jobView, postJob } from '../lib/send';
 import { orderView } from '../lib/views';
@@ -416,4 +416,11 @@ svc.get('/incoming/:id/handoff', async (c) => {
 svc.get('/incoming/:id/position', async (c) => {
   const o = await forMe(c, c.req.param('id'));
   return c.json({ status: o.status, last: o.return_trip ? null : await lastPosition(c.env, o.id) });
+});
+
+/** The driver doesn't look like their approved photo, or today's selfie is too unclear: cancel free and tell KiriGo. */
+svc.post('/orders/:id/face-mismatch', async (c) => {
+  const o = await mine(c, c.req.param('id'));
+  const b = await body(c, z.object({ reason: z.enum(['no_match', 'unclear', 'no_photo']) }));
+  return c.json(await orderView(c.env, await faceMismatch(c.env, o, c.get('actor'), b.reason), c.get('actor')));
 });

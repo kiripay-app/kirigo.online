@@ -1,4 +1,4 @@
-import { StrictMode, useCallback, useEffect, useState } from 'react';
+import { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { captureToken, client, explain, money, setToken } from '../api';
 
@@ -133,6 +133,7 @@ function DriverCard({ d, onDone }: { d: any; onDone: () => void }) {
         {d.licencePhotoUrl && <div><p className="small">Licence</p><img className="shot" src={d.licencePhotoUrl} alt="licence" /></div>}
         {d.vehiclePhotoUrl && <div><p className="small">Vehicle</p><img className="shot" src={d.vehiclePhotoUrl} alt="vehicle" /></div>}
       </div>
+      {d.licencePhotoUrl && d.status !== 'rejected' && <FaceCrop d={d} onSaved={onDone} />}
       {err && <div className="error">{err}</div>}
       {d.status === 'pending' || d.status === 'suspended' ? (
         <>
@@ -292,6 +293,68 @@ function Money() {
 
 // ------------------------------------------------------------------ alerts and ride approvals
 
+function FaceReports() {
+  const { data, load } = useLoad<any[]>('/api/admin/face-reports');
+  useEffect(() => { const t = setInterval(load, 30000); return () => clearInterval(t); }, [load]);
+  const handle = async (id: number) => { const note = prompt('What did you find?'); if (note) { await call(`/api/admin/face-reports/${id}/handle`, { body: { note } }); void load(); } };
+  const why: Record<string, string> = { no_match: 'Not the same person', unclear: 'Selfie too unclear to tell', no_photo: 'No photo to compare' };
+  if (!data?.length) return null;
+  return (
+    <>
+      <h3 style={{ marginTop: 16 }}>Riders who cancelled at the face check</h3>
+      {data.map((f) => (
+        <div className="card" key={f.id} style={f.paused_driver ? { borderColor: 'var(--bad)' } : undefined}>
+          <div className="between"><h3>{f.first_name} · {f.driver_code}</h3><span className={`pill ${f.paused_driver ? 'bad' : 'warn'}`}>{fmt(f.at)}</span></div>
+          <p className="small">{why[f.reason] ?? f.reason} · rider {f.rider_id} · trip {f.order_id}{f.paused_driver ? ' · rides paused: re-approve in Ride approvals once checked' : ''}</p>
+          <div className="row">
+            <div><p className="small">Today's selfie</p>{f.selfieUrl ? <img className="shot" src={f.selfieUrl} alt="selfie" style={{ maxWidth: 220 }} /> : <p className="small">none</p>}</div>
+            <div><p className="small">Approved face</p>{f.faceUrl ? <img className="shot" src={f.faceUrl} alt="approved face" style={{ maxWidth: 220 }} /> : <p className="small">none</p>}</div>
+          </div>
+          <button onClick={() => handle(f.id)}>Mark checked</button>
+        </div>
+      ))}
+    </>
+  );
+}
+
+/** Click the face on the licence, size the square, save: that crop is what riders compare with. */
+function FaceCrop({ d, onSaved }: { d: any; onSaved: () => void }) {
+  const img = useRef<HTMLImageElement>(null);
+  const [c, setC] = useState({ x: 0.25, y: 0.5, s: 0.3 });
+  const [open, setOpen] = useState(!d.facePhotoUrl);
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  const pick = (e: React.MouseEvent<HTMLImageElement>) => { const r = e.currentTarget.getBoundingClientRect(); setC({ ...c, x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height }); };
+  const save = async () => {
+    const el = img.current; if (!el) return;
+    const w = el.naturalWidth, h = el.naturalHeight, side = Math.round(c.s * w);
+    const sx = Math.max(0, Math.min(w - side, Math.round(c.x * w - side / 2))), sy = Math.max(0, Math.min(h - side, Math.round(c.y * h - side / 2)));
+    const cv = document.createElement('canvas'); cv.width = 480; cv.height = 480;
+    cv.getContext('2d')!.drawImage(el, sx, sy, side, side, 0, 0, 480, 480);
+    const blob: Blob | null = await new Promise((ok) => cv.toBlob(ok, 'image/jpeg', 0.9));
+    if (!blob) return;
+    setBusy(true); setErr('');
+    try { await call(`/api/admin/drivers/${d.id}/face-photo`, { raw: blob }); setOpen(false); onSaved(); } catch (e) { setErr(explain(e)); } finally { setBusy(false); }
+  };
+  if (!open) return <div className="row" style={{ marginTop: 8 }}>{d.facePhotoUrl && <img src={d.facePhotoUrl} alt="approved face" style={{ width: 96, height: 96, borderRadius: 12, objectFit: 'cover' }} />}<button className="secondary" onClick={() => setOpen(true)}>Change face photo</button></div>;
+  const el = img.current, aspect = el && el.naturalHeight ? el.naturalWidth / el.naturalHeight : 1.5;
+  return (
+    <div className="card" style={{ marginTop: 8 }}>
+      <p className="small"><b>Face photo for riders.</b> Click the middle of the face on the licence, then size the square so it shows the face only, no licence number, address or date of birth.</p>
+      <div style={{ position: 'relative', display: 'inline-block', maxWidth: '100%', overflow: 'hidden', borderRadius: 8 }}>
+        <img ref={img} src={d.licencePhotoUrl} alt="licence" onClick={pick} onLoad={() => setC({ ...c })} style={{ display: 'block', maxWidth: '100%', maxHeight: 360, cursor: 'crosshair', borderRadius: 8 }} />
+        <div style={{ position: 'absolute', pointerEvents: 'none', border: '3px solid #F59F00', borderRadius: 6, boxShadow: '0 0 0 9999px rgba(0,0,0,.45)',
+          left: `${(c.x - c.s / 2) * 100}%`, top: `${(c.y - (c.s * aspect) / 2) * 100}%`, width: `${c.s * 100}%`, height: `${c.s * aspect * 100}%` }} />
+      </div>
+      <label>Square size</label><input type="range" min="0.08" max="0.8" step="0.01" value={c.s} onChange={(e) => setC({ ...c, s: Number(e.target.value) })} />
+      {err && <div className="error">{err}</div>}
+      <div className="row" style={{ marginTop: 8 }}>
+        {d.facePhotoUrl && <button className="secondary" onClick={() => setOpen(false)}>Keep current</button>}
+        <button disabled={busy} onClick={save}>Save face photo</button>
+      </div>
+    </div>
+  );
+}
+
 function Alerts() {
   const { data, err, load } = useLoad<any[]>('/api/admin/alerts');
   useEffect(() => { const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
@@ -301,6 +364,7 @@ function Alerts() {
     <>
       {err && <div className="error">{err}</div>}
       {!data?.length && <p className="muted">No open alerts. This page refreshes every 15 seconds.</p>}
+      <FaceReports />
       {data?.map((a) => (
         <div className="card" key={a.id} style={a.kind === 'emergency' ? { borderColor: 'var(--bad)' } : undefined}>
           <div className="between"><h3>{label[a.kind] ?? a.kind} · {a.order_id}</h3><span className={`pill ${a.kind === 'emergency' ? 'bad' : 'warn'}`}>{fmt(a.at)}</span></div>
@@ -336,7 +400,12 @@ function RideApprovals() {
         <div className="card" key={d.id}>
           <div className="between"><h3>{d.first_name} · {d.driver_code}</h3><span className="pill">{d.ride_seats} seats</span></div>
           <p className="small">{d.vehicle_type} {d.plate} · {d.deliveries} deliveries · rating {d.rating_count >= 5 ? d.rating_avg : 'New'} · fare {money(d.base_cents)} + {money(d.per_km_cents)}/km, min {money(d.minimum_cents)} · waiting {money(d.wait_per_min_cents)}/min · cancel {money(d.cancel_cents)}</p>
-          {d.roadworthyUrl && <img className="shot" src={d.roadworthyUrl} alt="car" />}
+          <div className="row">
+            {d.roadworthyUrl && <div><p className="small">Car</p><img className="shot" src={d.roadworthyUrl} alt="car" /></div>}
+            {d.facePhotoUrl ? <div><p className="small">Face riders will see</p><img className="shot" src={d.facePhotoUrl} alt="driver's face" style={{ maxWidth: 220 }} /></div>
+              : <p className="small">No face photo yet. Riders compare today's selfie with it, so it's needed before rides.</p>}
+          </div>
+          {!d.facePhotoUrl && d.licencePhotoUrl && <FaceCrop d={d} onSaved={load} />}
           <div className="row" style={{ marginTop: 8 }}>
             {status !== 'approved' && <button onClick={() => act(d, 'approve')}>Car checked — approve rides</button>}
             {status === 'approved' && <button className="danger" onClick={() => act(d, 'suspend')}>Suspend rides</button>}

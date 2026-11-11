@@ -40,6 +40,7 @@ export async function orderView(env: Env, o: OrderRow, viewer: Actor) {
       dropNote: o.drop_note, etaS: o.eta_s, emergency: !!o.emergency_at,
       sharingWith: viewer.type === 'customer' ? ((await env.DB.prepare('SELECT COUNT(*) AS n FROM trip_buddies WHERE order_id=? AND stopped_at IS NULL').bind(o.id).first<{ n: number }>())?.n ?? 0) : undefined,
       sharing: viewer.type === 'driver' ? !!(await env.DB.prepare('SELECT 1 FROM trip_buddies WHERE order_id=? AND stopped_at IS NULL').bind(o.id).first()) : undefined,
+      faceCheck: viewer.type === 'customer' && o.driver_id && ['DRIVER_ASSIGNED', 'AT_SHOP'].includes(o.status) ? await faceUrls(env, o.driver_id) : undefined,
     } : undefined,
     source: o.source, sourceRef: o.source_ref,
     shop: { id: o.shop_id, name: shop?.name ?? '', pickup: { lat: o.pickup_lat, lng: o.pickup_lng }, note: shop?.pickup_note ?? '' },
@@ -74,4 +75,11 @@ async function sendBlock(env: Env, o: OrderRow, viewer: Actor) {
     recipient: mayKnow ? { name: j.recipient_name, phone: j.recipient_phone } : null,
     pickupNote: j.pickup_note,
   };
+}
+
+/** For the rider before boarding: today's selfie beside the face photo the KiriGo team approved (signed links, 10 minutes). */
+async function faceUrls(env: Env, driverId: string) {
+  const { faceCheck } = await import('./rides');
+  const { faceId, selfieId } = await faceCheck(env, driverId);
+  return { approvedUrl: faceId ? await photoUrl(env, faceId) : null, todayUrl: selfieId ? await photoUrl(env, selfieId) : null };
 }

@@ -56,6 +56,7 @@ const MESSAGES: Record<string, string> = {
   MONTHLY_FEE_DUE: 'Your monthly KiriGo fee is due. Pay it to go online.',
   GO_OFFLINE_FIRST: 'Go offline before changing your prices.',
   OFFER_GONE: 'That job was taken or withdrawn.',
+  FACE_PHOTO_NEEDED: 'Save a face photo from the licence first. Riders compare it with the driver before getting in.',
   OFFER_EXPIRED: 'Too late — that offer expired.',
   HANDOFF_CODE_WRONG: 'That code or QR is not right for this order.',
   TOO_MANY_TRIES: 'Too many wrong codes. Ask the customer to show the QR.',

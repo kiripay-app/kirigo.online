@@ -85,6 +85,8 @@ export interface Settings {
   send_bid_max_cents: Cents;       // stops a mistyped bid
   // rides
   rides_open: boolean;
+  face_reports_to_pause: number;   // this many "not the same person" cancels…
+  face_reports_days: number;       // …within this many days pauses the driver's rides
   ride_buffer_cents: Cents;        // refundable extra held with each fare, covers waiting time / late-cancel fee
   ride_free_wait_min: number;
   ride_free_cancel_min: number;
@@ -128,6 +130,8 @@ export const DEFAULT_SETTINGS: Settings = {
   send_open: true,
   send_bid_max_cents: 10000,
   rides_open: true,
+  face_reports_to_pause: 2,
+  face_reports_days: 7,
   ride_buffer_cents: 500,
   ride_free_wait_min: 3,
   ride_free_cancel_min: 2,

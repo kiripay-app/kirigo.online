@@ -2,7 +2,7 @@ import {
   displayRating, haversine, inKiWindow, positionOnRoad, priceRide, roadDistance, waitingCharge, type LatLng, type Settings,
 } from '@kirigo/shared';
 import type { Actor, Env } from '../env';
-import { onlineNear, road, sortOptions, type QuoteOption } from './matching';
+import { onlineNear, pushToDriver, road, sortOptions, type QuoteOption } from './matching';
 import { moveMoney } from './money';
 import { notify } from './notify';
 import { eventStmt, getOrder, payDriver, transition, type OrderRow } from './orders';
@@ -263,4 +263,38 @@ export async function overtimeCheck(env: Env) {
 export async function alertsFor(env: Env, orderId: string) {
   const { results } = await env.DB.prepare('SELECT kind, raised_by, at, lat, lng, handled_at FROM trip_alerts WHERE order_id=? ORDER BY id').bind(orderId).all();
   return results ?? [];
+}
+
+// ---------------------------------------------------------------- face check before boarding
+
+/** Today's shift selfie and the face the KiriGo team cut from the licence, for the rider to compare before getting in. */
+export async function faceCheck(env: Env, driverId: string) {
+  const d = await env.DB.prepare('SELECT face_photo_id FROM drivers WHERE id=?').bind(driverId).first<{ face_photo_id: string | null }>();
+  const sh = await env.DB.prepare('SELECT selfie_photo_id FROM shifts WHERE driver_id=? AND offline_at IS NULL ORDER BY online_at DESC LIMIT 1').bind(driverId).first<{ selfie_photo_id: string | null }>();
+  return { faceId: d?.face_photo_id ?? null, selfieId: sh?.selfie_photo_id ?? null };
+}
+
+/**
+ * The rider says the driver doesn't look like their approved photo, or today's selfie is too unclear to tell.
+ * Free cancel: every cent back, the driver gets nothing, the team is told. Enough reports in a short time pause
+ * the driver's rides until the team has looked.
+ */
+export async function faceMismatch(env: Env, o: OrderRow, actor: Actor, reason: 'no_match' | 'unclear' | 'no_photo') {
+  if (o.service !== 'ride') throw new ApiError('NOT_A_RIDE', 409);
+  if (!o.driver_id || !['DRIVER_ASSIGNED', 'AT_SHOP'].includes(o.status)) throw new ApiError('TOO_LATE_TO_CANCEL', 409);
+  const s = await loadSettings(env.DB);
+  const { selfieId } = await faceCheck(env, o.driver_id);
+  await env.DB.prepare("UPDATE offers SET result='withdrawn' WHERE order_id=? AND result IS NULL").bind(o.id).run();
+  await refundRest(env, o, 'face');
+  const done = await transition(env, await getOrder(env.DB, o.id), 'CANCELLED', actor, { set: { closed_at: nowIso() }, data: { reason: `face_${reason}`, feeCents: 0 } });
+  await finishSharing(env, done);
+  const since = new Date(Date.now() - s.face_reports_days * 86400_000).toISOString();
+  const prior = await env.DB.prepare('SELECT COUNT(*) AS n FROM face_reports WHERE driver_id=? AND at > ?').bind(o.driver_id, since).first<{ n: number }>();
+  const pause = (prior?.n ?? 0) + 1 >= s.face_reports_to_pause;
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO face_reports (order_id, driver_id, rider_id, reason, selfie_photo_id, paused_driver) VALUES (?,?,?,?,?,?)').bind(o.id, o.driver_id, o.customer_id, reason, selfieId, pause ? 1 : 0),
+    ...(pause ? [env.DB.prepare("UPDATE drivers SET ride_status='suspended', rides_on=0, review_note='Rides paused: riders said the driver did not match their photo' WHERE id=? AND ride_status='approved'").bind(o.driver_id)] : []),
+  ]);
+  await pushToDriver(env, o.driver_id, { type: 'ride_cancelled', orderId: o.id, why: 'face_check', ridesPaused: pause });
+  return done;
 }

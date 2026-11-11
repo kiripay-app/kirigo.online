@@ -9,7 +9,7 @@ import { continueProblem } from '../lib/problems';
 import { flagged, removeRating } from '../lib/ratings';
 import { loadSettings, missingForLaunch, saveSettings } from '../lib/settings';
 import { orderView } from '../lib/views';
-import { photoUrl } from '../lib/photos';
+import { photoUrl, savePhoto } from '../lib/photos';
 import { ApiError, body, nowIso } from '../lib/util';
 
 export const admin = new Hono<AppEnv>();
@@ -39,6 +39,7 @@ admin.get('/drivers', async (c) => {
   return c.json(await Promise.all((results ?? []).map(async (d) => ({
     ...d,
     licencePhotoUrl: d.licence_photo_id ? await photoUrl(c.env, d.licence_photo_id) : null,
+    facePhotoUrl: d.face_photo_id ? await photoUrl(c.env, d.face_photo_id) : null,
     vehiclePhotoUrl: d.vehicle_photo ? await photoUrl(c.env, d.vehicle_photo) : null,
   }))));
 });
@@ -171,6 +172,7 @@ admin.post('/drivers/:id/rides/:action{approve|suspend|reject}', async (c) => {
   if (action === 'approve') {
     if (d.status !== 'approved') throw new ApiError('APPROVE_AS_DRIVER_FIRST', 409);
     if (!b.roadworthyChecked) throw new ApiError('CHECK_THE_CAR', 422);
+    if (!d.face_photo_id) throw new ApiError('FACE_PHOTO_NEEDED', 422);
     const s = await loadSettings(c.env.DB);
     const record = d.deliveries >= s.ride_min_deliveries && (d.rating_count < 5 ? s.ride_min_rating <= 0 : d.rating_avg >= s.ride_min_rating);
     if (!record && !b.override) throw new ApiError('NOT_ENOUGH_RECORD', 422, { deliveries: d.deliveries, rating: d.rating_avg, need: { deliveries: s.ride_min_deliveries, rating: s.ride_min_rating } });
@@ -181,10 +183,34 @@ admin.post('/drivers/:id/rides/:action{approve|suspend|reject}', async (c) => {
   return c.json({ ok: true });
 });
 
+/** The face cut from the driver's licence (cropped in the admin page), shown to riders before they get in. */
+admin.post('/drivers/:id/face-photo', async (c) => {
+  const id = c.req.param('id');
+  const d = await c.env.DB.prepare('SELECT id FROM drivers WHERE id=?').bind(id).first();
+  if (!d) throw new ApiError('NOT_FOUND', 404);
+  const photoId = await savePhoto(c.env, c.get('actor'), c.req.raw, 'licence', null, 0);
+  await c.env.DB.prepare('UPDATE drivers SET face_photo_id=? WHERE id=?').bind(photoId, id).run();
+  return c.json({ ok: true, facePhotoUrl: await photoUrl(c.env, photoId) });
+});
+
+/** Riders who cancelled because the driver didn't match their photo. */
+admin.get('/face-reports', async (c) => {
+  const { results } = await c.env.DB.prepare(`SELECT f.*, d.first_name, d.driver_code, d.face_photo_id, d.ride_status FROM face_reports f JOIN drivers d ON d.id=f.driver_id
+    WHERE f.handled_at IS NULL ORDER BY f.id DESC LIMIT 100`).all<any>();
+  return c.json(await Promise.all((results ?? []).map(async (f) => ({ ...f,
+    selfieUrl: f.selfie_photo_id ? await photoUrl(c.env, f.selfie_photo_id) : null,
+    faceUrl: f.face_photo_id ? await photoUrl(c.env, f.face_photo_id) : null }))));
+});
+admin.post('/face-reports/:id/handle', async (c) => {
+  const b = await body(c, z.object({ note: z.string().min(2).max(500) }));
+  await c.env.DB.prepare('UPDATE face_reports SET handled_by=?, handled_at=?, note=? WHERE id=? AND handled_at IS NULL').bind(who(c), nowIso(), b.note, c.req.param('id')).run();
+  return c.json({ ok: true });
+});
+
 admin.get('/rides/applications', async (c) => {
   const { results } = await c.env.DB.prepare(`SELECT d.*, v.type AS vehicle_type, v.plate, r.base_cents, r.per_km_cents, r.minimum_cents, r.wait_per_min_cents, r.cancel_cents
     FROM drivers d JOIN ride_rate_cards r ON r.driver_id=d.id LEFT JOIN vehicles v ON v.driver_id=d.id AND v.active=1 WHERE d.ride_status=? ORDER BY d.created_at`).bind(c.req.query('status') ?? 'pending').all<any>();
-  return c.json(await Promise.all((results ?? []).map(async (d) => ({ ...d, roadworthyUrl: d.roadworthy_photo_id ? await photoUrl(c.env, d.roadworthy_photo_id) : null }))));
+  return c.json(await Promise.all((results ?? []).map(async (d) => ({ ...d, roadworthyUrl: d.roadworthy_photo_id ? await photoUrl(c.env, d.roadworthy_photo_id) : null, licencePhotoUrl: d.licence_photo_id ? await photoUrl(c.env, d.licence_photo_id) : null, facePhotoUrl: d.face_photo_id ? await photoUrl(c.env, d.face_photo_id) : null }))));
 });
 
 /** Emergencies and trip alerts not yet handled, emergencies first, with the trip and its live state. */
