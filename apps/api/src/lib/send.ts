@@ -6,7 +6,7 @@
 import { haversine, roadDistance, type LatLng } from '@kirigo/shared';
 import type { Actor, Env } from '../env';
 import { feeOkSql } from './fees';
-import { pushToDriver, road } from './matching';
+import { onlineNear, pushToDriver, road } from './matching';
 import { cancelOrder, eventStmt, getOrder, payDriver, transition, type OrderRow } from './orders';
 import { loadSettings } from './settings';
 import { driverCard } from './views';
@@ -53,9 +53,13 @@ export async function postJob(env: Env, customerId: string, b: {
       .bind(id, customerId, b.sourceRef, b.pickup.lat, b.pickup.lng, b.pickupNote, b.dropoff.lat, b.dropoff.lng, b.dropNote, distanceM, b.item, b.description,
         b.recipientName, b.recipientPhone, b.recipientUserId, new Date(Math.max(after, Date.now())).toISOString(), new Date(by).toISOString()),
   ]);
-  // let drivers online right now know there is something to bid on
-  const { results } = await env.DB.prepare(`SELECT d.id FROM drivers d WHERE d.status='approved' AND d.deliveries_on=1 AND ${feeOkSql(s.monthly_fee_cents)}`).bind(nowIso()).all<{ id: string }>();
-  await Promise.all((results ?? []).slice(0, 200).map((d) => pushToDriver(env, d.id, { type: 'send_job', jobId: id })));
+  // let drivers who are online right now (and near the pickup) know there is something to bid on
+  const near = await onlineNear(env, b.pickup, Math.max(s.pickup_radius_km, 5));
+  if (near.length) {
+    const ids = near.map((n) => n.driverId).slice(0, 50);
+    const { results } = await env.DB.prepare(`SELECT d.id FROM drivers d WHERE d.status='approved' AND d.deliveries_on=1 AND ${feeOkSql(s.monthly_fee_cents)} AND d.id IN (${ids.map((_, i) => `?${i + 2}`).join(',')})`).bind(nowIso(), ...ids).all<{ id: string }>();
+    await Promise.all((results ?? []).map((d) => pushToDriver(env, d.id, { type: 'send_job', jobId: id })));
+  }
   return id;
 }
 

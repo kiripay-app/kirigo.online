@@ -3,6 +3,7 @@ import {
 } from '@kirigo/shared';
 import type { Env } from '../env';
 import { feeOkSql } from './fees';
+import { alertFor, sendToDriver } from './push';
 import { eventStmt, getOrder, type OrderRow } from './orders';
 import { notify } from './notify';
 import { loadSettings } from './settings';
@@ -30,9 +31,12 @@ export async function onlineNear(env: Env, at: LatLng, radiusKm: number): Promis
   return res.ok ? ((await res.json()) as PresenceDriver[]) : [];
 }
 
-export async function pushToDriver(env: Env, driverId: string, msg: unknown) {
+/** Tells a driver: instantly over the open app's live connection, and as a phone alert if they use the Android app. */
+export async function pushToDriver(env: Env, driverId: string, msg: any) {
   const stub = env.DRIVER_PRESENCE.get(env.DRIVER_PRESENCE.idFromName('tarawa'));
   await stub.fetch('https://do/push', { method: 'POST', body: JSON.stringify({ driverId, msg }) }).catch(() => {});
+  const alert = alertFor(msg);
+  if (alert) await sendToDriver(env, driverId, alert);
 }
 
 export interface QuoteOption {
@@ -122,7 +126,7 @@ export async function offer(env: Env, o: OrderRow, driverId: string, priceCents:
     env.DB.prepare('UPDATE orders SET offer_driver_id=?, offer_expires_at=? WHERE id=?').bind(driverId, exp, o.id),
     eventStmt(env.DB, o.id, { type: 'system', id: null }, 'offer:sent', { driverId, priceCents }),
   ]);
-  await pushToDriver(env, driverId, { type: 'offer', offerId: id, orderId: o.id, expiresAt: exp });
+  await pushToDriver(env, driverId, { type: 'offer', offerId: id, orderId: o.id, expiresAt: exp, kind: o.service === 'ride' ? 'ride' : 'delivery' });
 }
 
 /**

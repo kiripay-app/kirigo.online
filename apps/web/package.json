@@ -9,8 +9,11 @@
     "android:sync": "npm run build && cap sync android"
   },
   "dependencies": {
+    "@capacitor-community/background-geolocation": "^1.3.1",
     "@capacitor/android": "^8.6.0",
+    "@capacitor/app": "^8.1.2",
     "@capacitor/core": "^8.6.0",
+    "@capacitor/push-notifications": "^8.1.3",
     "@kirigo/shared": "*",
     "jsqr": "^1.4.0",
     "leaflet": "^1.9.4",

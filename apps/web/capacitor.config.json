@@ -2,5 +2,24 @@
   "appId": "online.kirigo.driver",
   "appName": "KiriGo Driver",
   "webDir": "dist",
-  "server": { "url": "https://kirigo.online/driver/", "cleartext": false }
+  "server": {
+    "url": "https://kirigo.online/driver/",
+    "cleartext": false,
+    "allowNavigation": [
+      "kiripay.online",
+      "www.kiripay.online"
+    ]
+  },
+  "android": {
+    "useLegacyBridge": true
+  },
+  "plugins": {
+    "PushNotifications": {
+      "presentationOptions": [
+        "badge",
+        "sound",
+        "alert"
+      ]
+    }
+  }
 }

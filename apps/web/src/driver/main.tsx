@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { ApiError, captureToken, client, explain, money, sessionClaims, setToken } from '../api';
 import { CameraShot, QrScan } from './camera';
 import { WhereMap } from './where';
+import { isApp, setupPush, startBackgroundLocation, stopBackgroundLocation } from './native';
 import { addPending, checkQrOffline, pending, refreshKey, syncPending, toDataUrl } from './offline';
 
 const call = client('driver', () => location.reload());
@@ -187,6 +188,15 @@ function Home({ me, reload }: { me: any; reload: () => void }) {
     return () => { clearInterval(t); ws?.close(); };
   }, [me.online, refresh]);
 
+  // Android app: phone alerts for offers, and location that keeps flowing in the background while online
+  const [alerts, setAlerts] = useState<'on' | 'off' | 'web'>(isApp ? 'off' : 'web');
+  useEffect(() => { void setupPush(call, () => void refresh()).then(setAlerts); }, [refresh]);
+  useEffect(() => {
+    if (!isApp) return;
+    if (me.online) void startBackgroundLocation((p) => { lastPos = p; watchers.forEach((w) => w(p)); });
+    else void stopBackgroundLocation();
+  }, [me.online]);
+
   // where we are, while online and free (not stored, just for matching)
   useEffect(() => {
     if (!me.online || jobs.length) return;
@@ -232,7 +242,7 @@ function Home({ me, reload }: { me: any; reload: () => void }) {
           {!me.online
             ? <button className="block" disabled={me.fee?.due} onClick={() => setSelfie(true)}>Go online</button>
             : <button className="secondary block" disabled={jobs.length > 0} onClick={goOffline}>Go offline</button>}
-          <Visibility online={me.online} />
+          <Visibility online={me.online} alerts={alerts} />
           {offers.map((o) => <Offer key={o.offerId} o={o} onDone={(job) => { void refresh(); if (job) setOpen(job); }} />)}
           {jobs.map((j) => (
             <div className="card" key={j.id} onClick={() => setOpen(j.id)} style={{ cursor: 'pointer' }}>
@@ -343,7 +353,7 @@ function Job({ id, onClose }: { id: string; onClose: () => void }) {
 // ------------------------------------------------------------------ where KiriGo sees you
 
 /** Where KiriGo last heard from you, whether customers can find you for deliveries and rides, and why not. */
-function Visibility({ online }: { online: boolean }) {
+function Visibility({ online, alerts }: { online: boolean; alerts: 'on' | 'off' | 'web' }) {
   const [v, setV] = useState<any>(null);
   const [phone, setPhone] = useState<Pos | null>(lastPos);
   const [show, setShow] = useState(false);
@@ -384,6 +394,8 @@ function Visibility({ online }: { online: boolean }) {
       {msg && <p className="small">{msg}</p>}
       {line('Deliveries', v.deliveries)}
       {line('Rides', v.rides)}
+      {alerts === 'off' && <p className="small" style={{ marginTop: 8 }}>Phone alerts are off, so offers only show while this screen is open. Allow notifications for KiriGo Driver in your phone settings.</p>}
+      {alerts === 'web' && online && <p className="small" style={{ marginTop: 8 }}>In a browser, keep this screen open while online. The KiriGo Driver app keeps working with the screen off.</p>}
     </div>
   );
 }

@@ -1,0 +1,65 @@
+name: Build KiriGo Driver APK
+
+# Builds the KiriGo Driver Android app (the driver web app wrapped, plus phone alerts and background location).
+# Run it from GitHub → Actions → "Build KiriGo Driver APK" → Run workflow, then download the APK from the run.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "apps/web/capacitor.config.json"
+      - "apps/web/android-config/**"
+      - "apps/web/src/driver/native.ts"
+      - "apps/web/package.json"
+      - ".github/workflows/android.yml"
+
+jobs:
+  apk:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04   # pinned, like KiriPay's: newer images change the Android tools
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - run: npm ci
+
+      - name: Build the web app
+        run: npm run build -w @kirigo/web
+
+      - name: Firebase config is there
+        run: test -f apps/web/android-config/google-services.json || { echo "Put google-services.json in apps/web/android-config/ (see docs/driver-app.md)"; exit 1; }
+
+      # The Android project is generated fresh each time (it isn't kept in git).
+      - name: Create the Android project
+        working-directory: apps/web
+        run: |
+          npx cap add android
+          cp android-config/google-services.json android/app/google-services.json
+          # the name of the "KiriGo Driver is online" notification channel, as drivers see it in their phone settings
+          sed -i 's#</resources>#    <string name="capacitor_background_geolocation_notification_channel_name">Online status</string>\n</resources>#' android/app/src/main/res/values/strings.xml
+          npx cap sync android
+
+      - name: Build debug APK
+        working-directory: apps/web/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kirigo-driver-debug-apk
+          path: apps/web/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

@@ -148,6 +148,19 @@ d.post('/position', async (c) => {
   return c.json({ ok: true });
 });
 
+/** The Android app registers its phone for alerts (Firebase token). One phone can belong to one driver. */
+d.post('/push-token', async (c) => {
+  const b = await body(c, z.object({ token: z.string().min(20).max(4096), platform: z.enum(['android']).default('android') }));
+  await c.env.DB.prepare(`INSERT INTO push_tokens (token, driver_id, platform) VALUES (?,?,?)
+    ON CONFLICT(token) DO UPDATE SET driver_id=excluded.driver_id, last_seen_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')`).bind(b.token, meId(c), b.platform).run();
+  return c.json({ ok: true });
+});
+d.delete('/push-token', async (c) => {
+  const b = await body(c, z.object({ token: z.string().min(20).max(4096) }));
+  await c.env.DB.prepare('DELETE FROM push_tokens WHERE token=? AND driver_id=?').bind(b.token, meId(c)).run();
+  return c.json({ ok: true });
+});
+
 /**
  * What KiriGo can see of this driver right now: the last position it received and, for deliveries and rides,
  * whether customers can find them — and if not, every reason why, in plain words.

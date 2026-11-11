@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "344769805275",
+    "project_id": "kirigo-99c5b",
+    "storage_bucket": "kirigo-99c5b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:344769805275:android:eb79eb57937484993205fe",
+        "android_client_info": {
+          "package_name": "online.kirigo.driver"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAaM2TltUupi6s8TgrtNz--bT-8oBwsOEM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

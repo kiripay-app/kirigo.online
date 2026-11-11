@@ -20,6 +20,8 @@ export interface Env {
   APP_ENV?: string;
   /** optional GeoJSON LineString of the main road, as a JSON string (see docs/road-data.md) */
   ROAD_GEOJSON?: string;
+  /** Firebase service-account key (JSON) for phone alerts to drivers; secret, optional */
+  FCM_SERVICE_ACCOUNT?: string;
 }
 
 export type Actor =
