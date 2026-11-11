@@ -12,6 +12,8 @@ export interface Env {
   KIRIPAY_URL?: string;
   KIRIPAY_ESCROW_KEY?: string;
   KIRIPAY_SERVICE_KEY?: string;
+  /** secret, the same value as KiriPay's KIRIGO_SMS_KEY: texts to non-members go through KiriPay's Twilio (src/lib/sms.ts) */
+  KIRIPAY_SMS_KEY?: string;
   KIRIPOS_SERVICE_KEY?: string;
   KIRIPOS_URL?: string;
   KIRIPAY_MODE?: 'live' | 'mock';

@@ -64,6 +64,7 @@ const FIELDS: { k: string; label: string; kind: 'cents' | 'num' | 'bool' | 'nigh
   { k: 'retention_gps_months', label: 'Keep GPS routes (months)', kind: 'num' },
   { k: 'send_open', label: 'Parcels (KiriGo Send) open', kind: 'bool' },
   { k: 'send_bid_max_cents', label: 'Highest parcel offer a driver can make $', kind: 'cents' },
+  { k: 'send_sms_recipients', label: 'Text parcel recipients who aren\'t on KiriPay (driver + code, by SMS)', kind: 'bool' },
   { k: 'rides_open', label: 'Rides open', kind: 'bool' },
   { k: 'ride_buffer_cents', label: 'Refundable extra held with each ride $', kind: 'cents' },
   { k: 'ride_free_wait_min', label: 'Free waiting at pickup (minutes)', kind: 'num' },

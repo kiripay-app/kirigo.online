@@ -2,6 +2,7 @@ import {
   displayRating, haversine, inKiWindow, positionOnRoad, priceRide, roadDistance, waitingCharge, type LatLng, type Settings,
 } from '@kirigo/shared';
 import type { Actor, Env } from '../env';
+import { feeOkSql } from './fees';
 import { onlineNear, pushToDriver, road, sortOptions, type QuoteOption } from './matching';
 import { moveMoney } from './money';
 import { notify } from './notify';
@@ -34,7 +35,7 @@ export async function priceRideDrivers(env: Env, s: Settings, pickup: LatLng, di
            (SELECT COUNT(*) FROM orders o WHERE o.driver_id=d.id AND o.status IN ('DRIVER_ASSIGNED','AT_SHOP','PICKED_UP','ARRIVED')) AS busy
     FROM drivers d JOIN ride_rate_cards r ON r.driver_id=d.id
     JOIN vehicles v ON v.driver_id=d.id AND v.active=1
-    WHERE d.status='approved' AND d.ride_status='approved' AND d.rides_on=1 AND (d.free_until > ?1 OR d.fee_paid_until > ?1)
+    WHERE d.status='approved' AND d.ride_status='approved' AND d.rides_on=1 AND ${feeOkSql(s.monthly_fee_cents)}
       AND d.id IN (${qs})`).bind(now, ...ids).all<any>();
   const night = s.night_hours ? inKiWindow(Date.now(), s.night_hours.start, s.night_hours.end) : false;
   const byId = new Map(near.map((n) => [n.driverId, n]));

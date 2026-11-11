@@ -37,3 +37,21 @@ Server-to-server with `x-kirigo-key: KIRIPOS_SERVICE_KEY` to `https://kirigo.onl
 4. **Ratings**: `POST /orders/:id/rate`.
 5. **Webhook**: KiriGo POSTs status changes to `KIRIPOS_URL/api/kirigo/webhook`, signed with HMAC-SHA256 of the body
    using `KIRIPOS_SERVICE_KEY` in `x-kirigo-signature` — use it to refresh the Orders page and print a delivery slip.
+
+## SMS (KiriPay's Twilio account)
+
+KiriGo has no SMS provider of its own. Texts to people who are **not** on KiriPay go through KiriPay:
+`POST KIRIPAY_URL/api/internal/sms` with `x-sms-key: KIRIPAY_SMS_KEY` (= KiriPay's `KIRIGO_SMS_KEY`) and
+`{ template, to, values, ref }`. KiriGo can only choose a template; KiriPay writes the text (worker/sms.ts there),
+sends to Kiribati numbers only, applies per-number and daily limits, logs it, and sends each `ref` once.
+
+Used today for **KiriGo Send** recipients who aren't KiriPay members (members see it in the app instead):
+
+| Order event | Template | Text says |
+|---|---|---|
+| `PICKED_UP` | `send_on_the_way` | who is sending what, the driver's first name + KG code, and the 4-digit handoff code |
+| `ARRIVED` | `send_arrived` | the driver is at the door, the code again, "only give it once you have the parcel" |
+
+Queued in `sms_out` by `notify()`, sent by the cron (`src/lib/sms.ts`), retried 1, 2, 4 … minutes, dropped after 2 hours.
+Switch off in Admin → Settings → "Text parcel recipients who aren't on KiriPay". To add a new kind of text, add a template
+in KiriPay's worker/sms.ts first, then queue it here.

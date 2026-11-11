@@ -3,6 +3,7 @@ import { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ApiError, captureToken, client, explain, money, sessionClaims, setToken } from '../api';
 import { CameraShot, QrScan } from './camera';
+import { WhereMap } from './where';
 import { addPending, checkQrOffline, pending, refreshKey, syncPending, toDataUrl } from './offline';
 
 const call = client('driver', () => location.reload());
@@ -189,8 +190,12 @@ function Home({ me, reload }: { me: any; reload: () => void }) {
   // where we are, while online and free (not stored, just for matching)
   useEffect(() => {
     if (!me.online || jobs.length) return;
-    const t = setInterval(() => { if (lastPos) void call('/api/driver/position', { body: lastPos }).catch(() => {}); }, 30_000);
-    return () => clearInterval(t);
+    const send = () => { if (lastPos) void call('/api/driver/position', { body: lastPos }).catch(() => {}); };
+    const first = setTimeout(send, 3000);
+    const t = setInterval(send, 20_000);
+    const back = () => { if (document.visibilityState === 'visible') send(); };
+    document.addEventListener('visibilitychange', back);
+    return () => { clearTimeout(first); clearInterval(t); document.removeEventListener('visibilitychange', back); };
   }, [me.online, jobs.length]);
 
   // send handoffs saved while offline
@@ -227,6 +232,7 @@ function Home({ me, reload }: { me: any; reload: () => void }) {
           {!me.online
             ? <button className="block" disabled={me.fee?.due} onClick={() => setSelfie(true)}>Go online</button>
             : <button className="secondary block" disabled={jobs.length > 0} onClick={goOffline}>Go offline</button>}
+          <Visibility online={me.online} />
           {offers.map((o) => <Offer key={o.offerId} o={o} onDone={(job) => { void refresh(); if (job) setOpen(job); }} />)}
           {jobs.map((j) => (
             <div className="card" key={j.id} onClick={() => setOpen(j.id)} style={{ cursor: 'pointer' }}>
@@ -330,6 +336,54 @@ function Job({ id, onClose }: { id: string; onClose: () => void }) {
       )}
       {['DRIVER_ASSIGNED', 'AT_SHOP'].includes(o.status) && <button className="secondary block" style={{ marginTop: 16 }} onClick={giveBack}>Give job back</button>}
       {o.status === 'HANDED_OVER' && <Rate orderId={o.id} isReturn={isReturn} onDone={onClose} />}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ where KiriGo sees you
+
+/** Where KiriGo last heard from you, whether customers can find you for deliveries and rides, and why not. */
+function Visibility({ online }: { online: boolean }) {
+  const [v, setV] = useState<any>(null);
+  const [phone, setPhone] = useState<Pos | null>(lastPos);
+  const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false); const [msg, setMsg] = useState('');
+  const load = useCallback(() => call('/api/driver/visibility').then(setV).catch(() => {}), []);
+  useEffect(() => { void load(); const t = setInterval(load, 15_000); return () => clearInterval(t); }, [load, online]);
+  useEffect(() => { const w = (p: Pos) => setPhone({ ...p }); watchers.add(w); return () => { watchers.delete(w); }; }, []);
+  const sendNow = async () => {
+    setBusy(true); setMsg('');
+    try {
+      const p = await new Promise<Pos>((ok, no) => navigator.geolocation
+        ? navigator.geolocation.getCurrentPosition((x) => ok({ lat: x.coords.latitude, lng: x.coords.longitude }), no, { enableHighAccuracy: true, timeout: 15_000, maximumAge: 0 })
+        : no(new Error('no gps')));
+      lastPos = p; setPhone(p);
+      await call('/api/driver/position', { body: p });
+      await load();
+      setMsg('Sent. This is where customers see you now.');
+    } catch (e: any) {
+      setMsg(e?.code === 1 ? 'Location is blocked. Allow location for kirigo.online in your browser or phone settings.' : e instanceof ApiError ? explain(e) : "Couldn't get your location. Step outside or check that location is on.");
+    } finally { setBusy(false); }
+  };
+  if (!v) return null;
+  const line = (name: string, x: { visible: boolean; why: string[] }) => (
+    <div style={{ marginTop: 6 }}>
+      <div className="between"><b>{name}</b><span className={`pill ${x.visible ? 'good' : 'warn'}`}>{x.visible ? 'Customers can find you' : 'Not visible'}</span></div>
+      {!x.visible && <ul className="small" style={{ margin: '4px 0 0 18px' }}>{x.why.map((w: string) => <li key={w}>{w}</li>)}</ul>}
+    </div>);
+  const age = v.seen ? (v.seen.ageS < 10 ? 'just now' : v.seen.ageS < 60 ? `${v.seen.ageS} seconds ago` : `${Math.round(v.seen.ageS / 60)} minutes ago`) : null;
+  return (
+    <div className="card">
+      <div className="between"><b>Where KiriGo sees you</b><button className="secondary" onClick={() => setShow(!show)}>{show ? 'Hide map' : 'Show map'}</button></div>
+      <p className="small">{v.seen ? `Last location received ${age}.` : online ? 'No location received yet.' : 'You are offline.'}</p>
+      {show && <>
+        <WhereMap seen={v.seen} phone={phone} reachKm={v.reachKm} />
+        <p className="small"><span style={{ color: '#F59F00' }}>●</span> where KiriGo has you · <span style={{ color: '#2F80ED' }}>●</span> where your phone says you are · circle: customers within {v.reachKm} km can pick you</p>
+      </>}
+      {online && <button className="block" disabled={busy} onClick={sendNow}>{busy ? 'Getting your location…' : 'Send my location now'}</button>}
+      {msg && <p className="small">{msg}</p>}
+      {line('Deliveries', v.deliveries)}
+      {line('Rides', v.rides)}
     </div>
   );
 }

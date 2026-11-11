@@ -8,3 +8,4 @@ KIRIPOS_SERVICE_KEY=dev-kiripos-key
 # KIRIPAY_MODE=live
 # KIRIPAY_URL=http://localhost:8788
 # KIRIPAY_ESCROW_KEY=<same as KiriPay's KIRIGO_ESCROW_KEY>
+# KIRIPAY_SMS_KEY=<same as KiriPay's KIRIGO_SMS_KEY>   (texts to non-member parcel recipients; in mock mode they are only printed)

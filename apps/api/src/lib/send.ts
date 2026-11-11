@@ -5,6 +5,7 @@
 // code + photo and is paid on the spot. Nothing else is in the hold, so the order closes there and then.
 import { haversine, roadDistance, type LatLng } from '@kirigo/shared';
 import type { Actor, Env } from '../env';
+import { feeOkSql } from './fees';
 import { pushToDriver, road } from './matching';
 import { cancelOrder, eventStmt, getOrder, payDriver, transition, type OrderRow } from './orders';
 import { loadSettings } from './settings';
@@ -21,7 +22,6 @@ export interface SendJob {
   pickup_after: string; deliver_by: string; order_id: string | null; created_at: string; closed_at: string | null;
 }
 
-const feeOk = `(d.free_until > ?1 OR d.fee_paid_until > ?1)`;
 
 export async function getJob(env: Env, id: string): Promise<SendJob> {
   const j = await env.DB.prepare('SELECT * FROM send_jobs WHERE id=?').bind(id).first<SendJob>();
@@ -54,7 +54,7 @@ export async function postJob(env: Env, customerId: string, b: {
         b.recipientName, b.recipientPhone, b.recipientUserId, new Date(Math.max(after, Date.now())).toISOString(), new Date(by).toISOString()),
   ]);
   // let drivers online right now know there is something to bid on
-  const { results } = await env.DB.prepare(`SELECT d.id FROM drivers d WHERE d.status='approved' AND d.deliveries_on=1 AND ${feeOk}`).bind(nowIso()).all<{ id: string }>();
+  const { results } = await env.DB.prepare(`SELECT d.id FROM drivers d WHERE d.status='approved' AND d.deliveries_on=1 AND ${feeOkSql(s.monthly_fee_cents)}`).bind(nowIso()).all<{ id: string }>();
   await Promise.all((results ?? []).slice(0, 200).map((d) => pushToDriver(env, d.id, { type: 'send_job', jobId: id })));
   return id;
 }
@@ -82,8 +82,9 @@ function jobBasics(j: SendJob) {
 const area = (lat: number, lng: number) => ({ lat: Math.round(lat * 100) / 100, lng: Math.round(lng * 100) / 100 });
 
 async function bidder(env: Env, driverId: string, item: string) {
+  const s = await loadSettings(env.DB);
   const d = await env.DB.prepare(`SELECT d.id, v.can_bulky FROM drivers d JOIN vehicles v ON v.driver_id=d.id AND v.active=1
-    WHERE d.id=?2 AND d.status='approved' AND d.deliveries_on=1 AND ${feeOk}`).bind(nowIso(), driverId).first<any>();
+    WHERE d.id=?2 AND d.status='approved' AND d.deliveries_on=1 AND ${feeOkSql(s.monthly_fee_cents)}`).bind(nowIso(), driverId).first<any>();
   if (!d) throw new ApiError('NOT_ABLE_TO_BID', 403);
   if (item === 'bulky' && !d.can_bulky) throw new ApiError('VEHICLE_TOO_SMALL', 422);
 }

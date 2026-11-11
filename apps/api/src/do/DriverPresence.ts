@@ -64,6 +64,10 @@ export class DriverPresence extends DurableObject<Env> {
       }
       return Response.json({ ok: true });
     }
+    if (op === 'one') {
+      const p = this.online.get(url.searchParams.get('driver') ?? '');
+      return Response.json(p ? { ...p, staleAfterMs: STALE_MS } : null);
+    }
     if (op === 'all') return Response.json([...this.online.values()]);
     return new Response('not found', { status: 404 });
   }

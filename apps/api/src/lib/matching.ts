@@ -2,6 +2,7 @@ import {
   displayRating, haversine, inKiWindow, priceDelivery, roadDistance, type LatLng, type Road, type Settings, type Size,
 } from '@kirigo/shared';
 import type { Env } from '../env';
+import { feeOkSql } from './fees';
 import { eventStmt, getOrder, type OrderRow } from './orders';
 import { notify } from './notify';
 import { loadSettings } from './settings';
@@ -40,7 +41,6 @@ export interface QuoteOption {
   rating: string; deliveries: number; priceCents: number; etaMin: number; distanceToShopM: number;
 }
 
-const feeOk = `(d.free_until > ?1 OR d.fee_paid_until > ?1)`;
 
 /** Drivers who can take a trip from `from`, with their price for `distanceM`. */
 export async function priceDrivers(env: Env, s: Settings, from: LatLng, distanceM: number, size: Size, excludeDriver?: string | null): Promise<QuoteOption[]> {
@@ -57,7 +57,7 @@ export async function priceDrivers(env: Env, s: Settings, from: LatLng, distance
            (SELECT COUNT(*) FROM orders o WHERE o.driver_id=d.id AND o.status IN ('DRIVER_ASSIGNED','AT_SHOP','PICKED_UP','ARRIVED') AND o.kind <> 'enroute') AS busy
     FROM drivers d JOIN rate_cards r ON r.driver_id=d.id
     JOIN vehicles v ON v.driver_id=d.id AND v.active=1
-    WHERE d.status='approved' AND d.deliveries_on=1 AND ${feeOk} AND d.id IN (${qs})`).bind(now, ...ids).all<any>();
+    WHERE d.status='approved' AND d.deliveries_on=1 AND ${feeOkSql(s.monthly_fee_cents)} AND d.id IN (${qs})`).bind(now, ...ids).all<any>();
   const night = s.night_hours ? inKiWindow(Date.now(), s.night_hours.start, s.night_hours.end) : false;
   const byId = new Map(near.map((n) => [n.driverId, n]));
   const out: QuoteOption[] = [];

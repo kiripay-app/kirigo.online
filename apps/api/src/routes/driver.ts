@@ -139,8 +139,49 @@ d.post('/offline', async (c) => {
 /** Position while online and free: only kept in memory for matching (not stored). */
 d.post('/position', async (c) => {
   const b = await body(c, z.object({ lat: z.number(), lng: z.number() }));
-  await presence(c.env, 'position', { driverId: meId(c), lat: b.lat, lng: b.lng });
+  const r = await presence(c.env, 'position', { driverId: meId(c), lat: b.lat, lng: b.lng });
+  // the shift is open but the matcher lost track of this driver (e.g. after a restart): put them back
+  if (r?.offline) {
+    const open = await c.env.DB.prepare('SELECT 1 FROM shifts WHERE driver_id=? AND offline_at IS NULL').bind(meId(c)).first();
+    if (open) await presence(c.env, 'online', { driverId: meId(c), lat: b.lat, lng: b.lng });
+  }
   return c.json({ ok: true });
+});
+
+/**
+ * What KiriGo can see of this driver right now: the last position it received and, for deliveries and rides,
+ * whether customers can find them — and if not, every reason why, in plain words.
+ */
+d.get('/visibility', async (c) => {
+  const id = meId(c);
+  const s = await loadSettings(c.env.DB);
+  const row = await c.env.DB.prepare('SELECT * FROM drivers WHERE id=?').bind(id).first<any>();
+  const shift = await c.env.DB.prepare('SELECT 1 FROM shifts WHERE driver_id=? AND offline_at IS NULL').bind(id).first();
+  const stub = c.env.DRIVER_PRESENCE.get(c.env.DRIVER_PRESENCE.idFromName('tarawa'));
+  const seen = await (await stub.fetch(`https://do/one?driver=${encodeURIComponent(id)}`)).json<any>();
+  const ageS = seen ? Math.round((Date.now() - seen.at) / 1000) : null;
+  const fee = await feeStatus(c.env, row);
+  const busy = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM orders WHERE driver_id=? AND status IN ('DRIVER_ASSIGNED','AT_SHOP','PICKED_UP','ARRIVED')").bind(id).first<{ n: number }>();
+  const common: string[] = [];
+  if (row.status !== 'approved') common.push(row.status === 'pending' ? 'Your application is waiting for approval' : 'Your driver account is not active');
+  if (!shift) common.push('You are offline. Tap Go online');
+  else if (!seen) common.push('KiriGo has not received your location yet. Allow location for kirigo.online and keep this screen open');
+  else if (ageS! > 180) common.push(`Your location reached KiriGo ${Math.round(ageS! / 60)} minutes ago. Keep this screen open with the phone awake`);
+  if (fee.due) common.push('Your monthly fee is due');
+  if ((busy?.n ?? 0) > 0) common.push('You are on a job. New ones come after you finish');
+  const del = [...common, ...(row.deliveries_on ? [] : ['Deliveries are switched off in Me → Services'])];
+  const rideStatus: Record<string, string> = { none: 'You have not applied for rides yet (Me → Rides)', pending: 'Your rides application is waiting for approval', suspended: 'Your rides are paused. Contact KiriGo', rejected: 'Your rides application was not approved' };
+  const ride = [...common,
+    ...(row.ride_status === 'approved' ? [] : [rideStatus[row.ride_status] ?? 'Not approved for rides']),
+    ...(row.ride_status === 'approved' && !row.rides_on ? ['Rides are switched off in Me → Services'] : []),
+    ...(s.rides_open ? [] : ['KiriGo rides are closed right now'])];
+  return c.json({
+    online: !!shift,
+    seen: seen ? { lat: seen.lat, lng: seen.lng, ageS } : null,
+    reachKm: s.pickup_radius_km,
+    deliveries: { visible: del.length === 0, why: del },
+    rides: { visible: ride.length === 0, why: ride },
+  }, 200, { 'cache-control': 'no-store' });
 });
 
 d.get('/offers', async (c) => {
@@ -440,9 +481,10 @@ driver.route('/', d);
 
 // ------------------------------------------------------------------ helpers
 
-async function presence(env: Env, op: 'online' | 'offline' | 'position', data: Record<string, unknown>) {
+async function presence(env: Env, op: 'online' | 'offline' | 'position', data: Record<string, unknown>): Promise<any> {
   const stub = env.DRIVER_PRESENCE.get(env.DRIVER_PRESENCE.idFromName('tarawa'));
-  await stub.fetch(`https://do/${op}`, { method: 'POST', body: JSON.stringify(data) });
+  const r = await stub.fetch(`https://do/${op}`, { method: 'POST', body: JSON.stringify(data) });
+  return r.json().catch(() => null);
 }
 
 async function logPos(env: Env, orderId: string, actor: Actor, p: { lat: number; lng: number }) {

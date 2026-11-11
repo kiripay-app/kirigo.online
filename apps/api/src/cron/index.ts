@@ -8,6 +8,7 @@ import { continueProblem, returnReceived, shopFault } from '../lib/problems';
 import { unblindOld } from '../lib/ratings';
 import { overtimeCheck } from '../lib/rides';
 import { expireJobs } from '../lib/send';
+import { flushSms } from '../lib/sms';
 import { loadSettings } from '../lib/settings';
 
 const SYSTEM: Actor = { type: 'system', id: null };
@@ -30,6 +31,7 @@ export async function runCron(env: Env, at: Date) {
     ['send jobs past their deadline', () => expireJobs(env)],
     ['money retries', () => retryMoney(env)],
     ['webhooks', () => flushWebhooks(env)],
+    ['texts to non-members', () => flushSms(env)],
 
     // 24 h after handoff with no problem: the shop is paid (customer reminded 4 h before)
     ['reminders', () => each(env, `SELECT * FROM orders o WHERE status='HANDED_OVER' AND service='delivery' AND kind IN ('delivery','correction') AND handed_over_at < ?

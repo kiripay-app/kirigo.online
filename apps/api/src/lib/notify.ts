@@ -1,6 +1,7 @@
 import { RIDE_LABEL, SEND_LABEL, STATUS_LABEL } from '@kirigo/shared';
 import type { Env } from '../env';
 import type { OrderRow } from './orders';
+import { queueRecipientSms } from './sms';
 import { nowIso } from './util';
 
 /**
@@ -33,6 +34,10 @@ export async function notify(env: Env, o: Pick<OrderRow, 'id' | 'status' | 'shop
     // shops never hear about rides or parcels between people
     ...(ride || o.send_job_id ? [] : [env.DB.prepare('INSERT INTO webhooks_out (target, body_json, next_try_at) VALUES (?,?,?)').bind('kiripos', body, at)]),
   ]);
+  // KiriGo Send to someone who isn't on KiriPay: they hear by SMS instead (driver details + handoff code)
+  if (o.send_job_id && !recipient) {
+    try { await queueRecipientSms(env, o.id, o.send_job_id, event); } catch (e) { console.error('sms queue failed', e); }
+  }
 }
 
 /** Send queued webhooks (cron). Backs off 1, 2, 4 … minutes, gives up after a day. */

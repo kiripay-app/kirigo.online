@@ -83,6 +83,7 @@ export interface Settings {
   // KiriGo Send: person-to-person parcels, drivers bid
   send_open: boolean;
   send_bid_max_cents: Cents;       // stops a mistyped bid
+  send_sms_recipients: boolean;    // text non-member recipients the driver's details + handoff code (via KiriPay's SMS)
   // rides
   rides_open: boolean;
   face_reports_to_pause: number;   // this many "not the same person" cancels…
@@ -129,6 +130,7 @@ export const DEFAULT_SETTINGS: Settings = {
   delivery_open: false,
   send_open: true,
   send_bid_max_cents: 10000,
+  send_sms_recipients: true,
   rides_open: true,
   face_reports_to_pause: 2,
   face_reports_days: 7,

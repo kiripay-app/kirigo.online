@@ -61,3 +61,7 @@ export async function sweepFees(env: Env): Promise<number> {
   }
   return n;
 }
+
+/** SQL for "this driver may be offered work": inside the free period, paid up, or no monthly fee is set at all
+ *  (the same rule as feeStatus().canGoOnline, so nobody can be online yet invisible). ?1 = now. */
+export const feeOkSql = (monthlyFeeCents: number | null | undefined) => (monthlyFeeCents ? '(d.free_until > ?1 OR d.fee_paid_until > ?1)' : '1=1');
