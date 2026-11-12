@@ -74,11 +74,15 @@ Browser:
 
 ## Testing locally with real escrow
 
+Drivers and admins must have two-step sign-in switched on in KiriPay (`totp_enabled=1` below): KiriPay only tells KiriGo
+"two-step done" while it is actually on for the account. Start KiriGo with `--local-upstream localhost:8787` so its
+sign-in links point at localhost rather than kirigo.online.
+
 ```bash
 # KiriPay (port 8788), with KIRIGO_URL=http://localhost:8787 and the two keys in .dev.vars
 npx wrangler dev --port 8788 --inspector-port 9331
 # KiriGo (port 8787) with KIRIPAY_MODE=live, KIRIPAY_URL=http://localhost:8788 and the matching keys
-npm run dev
+npx wrangler dev --port 8787 --local-upstream localhost:8787
 node apps/api/test/integration.mjs    # KP_DIR=~/projects/kiripay KP_JWT_SECRET=<your local JWT_SECRET>
 ```
 
@@ -86,9 +90,9 @@ The test seeds nothing itself; it expects these rows in the local KiriPay DB (co
 `npx wrangler d1 execute kiripay --local --file seed.sql`):
 
 ```sql
-INSERT INTO users (id,email,name,pw_hash,pw_salt,email_verified,kyc_tier) VALUES
- ('u_cust','cust@test.ki','Tekaai Customer','x','x',1,2), ('u_drv','drv@test.ki','Teeta Driver','x','x',1,2),
- ('u_owner','owner@test.ki','Shop Owner','x','x',1,2), ('u_shopwallet','wallet@test.ki','Smoke Shop','x','x',1,2);
+INSERT INTO users (id,email,name,pw_hash,pw_salt,email_verified,kyc_tier,totp_enabled) VALUES
+ ('u_cust','cust@test.ki','Tekaai Customer','x','x',1,2,1), ('u_drv','drv@test.ki','Teeta Driver','x','x',1,2,1),
+ ('u_owner','owner@test.ki','Shop Owner','x','x',1,2,1), ('u_shopwallet','wallet@test.ki','Smoke Shop','x','x',1,2,0);
 UPDATE users SET role='merchant' WHERE id='u_shopwallet';
 INSERT INTO accounts (id, owner_id, kind, balance) VALUES ('acc_cust','u_cust','user',100000),('acc_drv','u_drv','user',0),('acc_owner','u_owner','user',0),('acc_shop','u_shopwallet','user',0);
 UPDATE accounts SET balance = balance - 100000 WHERE id='sys_cash';

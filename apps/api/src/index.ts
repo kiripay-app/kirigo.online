@@ -16,6 +16,10 @@ export { DriverPresence } from './do/DriverPresence';
 
 const app = new Hono<AppEnv>({ strict: false });
 
+const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; " +
+  "img-src 'self' data: blob: https:; connect-src 'self' wss: https:; worker-src 'self' blob:; media-src 'self' blob:; object-src 'none'; base-uri 'self'; " +
+  "form-action 'self'; frame-ancestors 'none'";
+
 // www.kirigo.online → kirigo.online (one address for links, sign-in and app stores)
 app.use('*', async (c, next) => {
   const url = new URL(c.req.url);
@@ -24,9 +28,22 @@ app.use('*', async (c, next) => {
     return c.redirect(url.toString(), 301);
   }
   await next();
-  c.header('x-content-type-options', 'nosniff');
-  c.header('referrer-policy', 'no-referrer');
-  c.header('x-frame-options', 'DENY');
+  const h = new Headers(c.res.headers);   // pages come from the static-assets binding, whose headers can't be changed in place
+  h.set('x-content-type-options', 'nosniff');
+  h.set('referrer-policy', 'no-referrer');
+  h.set('x-frame-options', 'DENY');
+  h.set('permissions-policy', 'camera=(self), geolocation=(self), microphone=(), payment=()');
+  // Scripts only from kirigo.online itself, so injected text can never run as code. Pictures, map tiles, Google Fonts and the
+  // live-tracking sockets keep working. Map tiles and photos are same-site; data:/blob: cover camera snapshots and Leaflet.
+  // The Android driver app loads /driver/ and its native bridge may add a small inline script, so those pages also allow inline
+  // scripts (still none from other sites).
+  if (!c.req.path.startsWith('/tiles/') && !c.req.path.startsWith('/p/'))
+    h.set('content-security-policy', c.req.path.startsWith('/driver') ? CSP.replace("script-src 'self'", "script-src 'self' 'unsafe-inline'") : CSP);
+  if (url.protocol === 'https:') h.set('strict-transport-security', 'max-age=31536000; includeSubDomains');
+  // API answers are personal (orders, earnings, locations): never stored by the phone or anything in between.
+  // (The year-long caching of the hashed app files is in apps/web/public/_headers.)
+  if (c.req.path.startsWith('/api/') && !h.has('cache-control')) h.set('cache-control', 'no-store');
+  c.res = new Response(c.res.body, { status: c.res.status, statusText: c.res.statusText, headers: h });
 });
 
 app.get('/api/health', (c) => c.json({ ok: true, service: 'kirigo', mode: c.env.KIRIPAY_MODE ?? 'live' }));

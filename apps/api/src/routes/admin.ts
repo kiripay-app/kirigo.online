@@ -10,6 +10,7 @@ import { flagged, removeRating } from '../lib/ratings';
 import { loadSettings, missingForLaunch, saveSettings } from '../lib/settings';
 import { orderView } from '../lib/views';
 import { photoUrl, savePhoto } from '../lib/photos';
+import { keyState, testDriver } from '../lib/push';
 import { ApiError, body, nowIso } from '../lib/util';
 
 export const admin = new Hono<AppEnv>();
@@ -30,6 +31,26 @@ admin.put('/settings', async (c) => {
     if (missing.length) throw new ApiError('SET_THESE_FIRST', 422, { missing });
   }
   return c.json({ settings: await saveSettings(c.env.DB, patch as any, who(c)) });
+});
+
+// ------------------------------------------------------------------ phone alerts (Firebase)
+
+/** Whether phone alerts are set up, and which drivers have the Android app registered. */
+admin.get('/push/status', async (c) => {
+  const k = await keyState(c.env);
+  const { results } = await c.env.DB.prepare(`SELECT d.id, d.first_name, d.driver_code, d.status, COUNT(t.token) AS phones, MAX(t.last_seen_at) AS last_seen
+    FROM push_tokens t JOIN drivers d ON d.id=t.driver_id GROUP BY d.id ORDER BY last_seen DESC LIMIT 300`).all<any>();
+  return c.json({ key: k.state, projectId: k.projectId, drivers: results ?? [] });
+});
+
+/** Rings one driver's phones with a test alert and reports what happened to each phone. */
+admin.post('/push/test', async (c) => {
+  const b = await body(c, z.object({ driverId: z.string().min(1).max(80) }));
+  const d = await c.env.DB.prepare('SELECT id, first_name, driver_code FROM drivers WHERE id=?').bind(b.driverId).first<any>();
+  if (!d) throw new ApiError('NOT_FOUND', 404);
+  const r = await testDriver(c.env, d.id);
+  console.log('push.test', JSON.stringify({ by: who(c), driver: d.id, key: r.key, sent: r.phones.filter((p) => p.ok).length, phones: r.phones.length }));
+  return c.json({ driver: d, ...r });
 });
 
 admin.get('/drivers', async (c) => {

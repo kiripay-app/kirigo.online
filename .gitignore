@@ -5,3 +5,15 @@ dist/
 *.log
 android/
 .DS_Store
+
+# never upload secrets saved into the project's top folder: 2FA backup codes, exported keys, PDFs
+/*.pdf
+/*2FA*
+/*2fa*
+/*backup*code*
+/*recovery*code*
+*.pem
+*.p12
+/*.key
+.env
+.env.*

@@ -29,15 +29,16 @@ const kp = (user) => (p, o = {}) => req(`${KP}/api${p}`, { ...o, headers: { ...(
 const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]);
 async function signIn(user, app = 'driver') {
   const start = await req(`${GO}/auth/start?app=${app}`, { redirect: 'manual' });
+  const stateCookie = (start.headers.get('set-cookie') ?? '').split(';')[0];   // the sign-in must finish in the browser that started it
   const back = await req(start.headers.get('location').replace('https://kiripay.online', KP), { redirect: 'manual', headers: { cookie: kpCookie(user) } });
-  const done = await req(back.headers.get('location'), { redirect: 'manual' });
+  const done = await req(back.headers.get('location'), { redirect: 'manual', headers: { cookie: stateCookie } });
   return decodeURIComponent(done.headers.get('location').split('#token=')[1]);
 }
 
 async function main() {
   // people in KiriPay: a car driver, and a friend the rider has saved as a contact
   const DRV = `u_rd_${run}`, BUD = `u_bd_${run}`, CT = `ct_${run}`;
-  sql(`INSERT INTO users (id,email,name,pw_hash,pw_salt,email_verified,kyc_tier) VALUES ('${DRV}','${DRV}@test.ki','Bwebwe Driver','x','x',1,2),('${BUD}','${BUD}@test.ki','Nei Friend','x','x',1,2)`);
+  sql(`INSERT INTO users (id,email,name,pw_hash,pw_salt,email_verified,kyc_tier,totp_enabled) VALUES ('${DRV}','${DRV}@test.ki','Bwebwe Driver','x','x',1,2,1),('${BUD}','${BUD}@test.ki','Nei Friend','x','x',1,2,1)`);
   sql(`INSERT INTO accounts (id, owner_id, kind, balance) VALUES ('acc_${DRV}','${DRV}','user',0),('acc_${BUD}','${BUD}','user',0)`);
   sql(`INSERT INTO contacts (id, owner_id, name, email) VALUES ('${CT}','u_cust','Nei','${BUD}@test.ki'),('${CT}x','u_cust','Nobody','nobody-${run}@test.ki')`);
 

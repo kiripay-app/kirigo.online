@@ -36,10 +36,11 @@ const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 
 /** The real "Sign in with KiriPay" round trip: KiriGo → KiriPay authorize → KiriGo callback → session token. */
 async function signIn(user, app = 'driver') {
   const start = await req(`${GO}/auth/start?app=${app}`, { redirect: 'manual' });
+  const stateCookie = (start.headers.get('set-cookie') ?? '').split(';')[0];   // the sign-in must finish in the browser that started it
   const authorize = start.headers.get('location');
   const back = await req(authorize.replace('https://kiripay.online', KP), { redirect: 'manual', headers: { cookie: kpCookie(user) } });
   const callback = back.headers.get('location');
-  const done = await req(callback, { redirect: 'manual' });
+  const done = await req(callback, { redirect: 'manual', headers: { cookie: stateCookie } });
   return decodeURIComponent(done.headers.get('location').split('#token=')[1]);
 }
 

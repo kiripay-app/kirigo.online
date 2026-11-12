@@ -1,9 +1,10 @@
 import { adultsOnly } from '@kirigo/shared';
-import { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
+import { StrictMode, Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ApiError, captureToken, client, explain, money, sessionClaims, setToken } from '../api';
 import { CameraShot, QrScan } from './camera';
-import { WhereMap } from './where';
+// the map (Leaflet + map tiles) loads only when the "where am I seen" map is opened: a much smaller first download
+const WhereMap = lazy(() => import('./where').then((m) => ({ default: m.WhereMap })));
 import { isApp, setupPush, startBackgroundLocation, stopBackgroundLocation } from './native';
 import { addPending, checkQrOffline, pending, refreshKey, syncPending, toDataUrl } from './offline';
 
@@ -387,7 +388,7 @@ function Visibility({ online, alerts }: { online: boolean; alerts: 'on' | 'off' 
       <div className="between"><b>Where KiriGo sees you</b><button className="secondary" onClick={() => setShow(!show)}>{show ? 'Hide map' : 'Show map'}</button></div>
       <p className="small">{v.seen ? `Last location received ${age}.` : online ? 'No location received yet.' : 'You are offline.'}</p>
       {show && <>
-        <WhereMap seen={v.seen} phone={phone} reachKm={v.reachKm} />
+        <Suspense fallback={<p className="small">Loading map…</p>}><WhereMap seen={v.seen} phone={phone} reachKm={v.reachKm} /></Suspense>
         <p className="small"><span style={{ color: '#F59F00' }}>●</span> where KiriGo has you · <span style={{ color: '#2F80ED' }}>●</span> where your phone says you are · circle: customers within {v.reachKm} km can pick you</p>
       </>}
       {online && <button className="block" disabled={busy} onClick={sendNow}>{busy ? 'Getting your location…' : 'Send my location now'}</button>}

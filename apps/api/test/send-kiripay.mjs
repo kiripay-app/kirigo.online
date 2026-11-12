@@ -30,14 +30,15 @@ const kp = (user) => (p, o = {}) => req(`${KP}/api${p}`, { ...o, headers: { ...(
 const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]);
 async function signIn(user, app = 'driver') {
   const start = await req(`${GO}/auth/start?app=${app}`, { redirect: 'manual' });
+  const stateCookie = (start.headers.get('set-cookie') ?? '').split(';')[0];   // the sign-in must finish in the browser that started it
   const back = await req(start.headers.get('location').replace('https://kiripay.online', KP), { redirect: 'manual', headers: { cookie: kpCookie(user) } });
-  const done = await req(back.headers.get('location'), { redirect: 'manual' });
+  const done = await req(back.headers.get('location'), { redirect: 'manual', headers: { cookie: stateCookie } });
   return decodeURIComponent(done.headers.get('location').split('#token=')[1]);
 }
 
 async function main() {
   const D1 = `u_s1_${run}`, D2 = `u_s2_${run}`, REC = `u_rc_${run}`, PHONE = `+6867${String(Date.now()).slice(-7)}`;
-  sql(`INSERT INTO users (id,email,name,pw_hash,pw_salt,email_verified,kyc_tier) VALUES ('${D1}','${D1}@test.ki','Taam One','x','x',1,2),('${D2}','${D2}@test.ki','Bwena Two','x','x',1,2)`);
+  sql(`INSERT INTO users (id,email,name,pw_hash,pw_salt,email_verified,kyc_tier,totp_enabled) VALUES ('${D1}','${D1}@test.ki','Taam One','x','x',1,2,1),('${D2}','${D2}@test.ki','Bwena Two','x','x',1,2,1)`);
   sql(`INSERT INTO users (id,email,name,pw_hash,pw_salt,email_verified,phone,phone_verified,kyc_tier) VALUES ('${REC}','${REC}@test.ki','Nei Receiver','x','x',1,'${PHONE}',1,1)`);
   sql(`INSERT INTO accounts (id, owner_id, kind, balance) VALUES ('acc_${D1}','${D1}','user',0),('acc_${D2}','${D2}','user',0),('acc_${REC}','${REC}','user',0)`);
 

@@ -78,3 +78,54 @@ export async function sendToDriver(env: Env, driverId: string, alert: Alert, fet
     return sent;
   } catch (e) { console.error('fcm', e); return 0; }
 }
+
+// ------------------------------------------------------------------ admin check ("Send test alert")
+
+export type KeyState = 'missing' | 'invalid' | 'rejected' | 'ok';
+
+/** Is the Firebase key there, readable, and accepted by Google? (Asks Google for a token; cached ~50 minutes.) */
+export async function keyState(env: Env, fetcher: typeof fetch = fetch): Promise<{ state: KeyState; projectId: string | null }> {
+  if (!env.FCM_SERVICE_ACCOUNT) return { state: 'missing', projectId: null };
+  const a = account(env);
+  if (!a) return { state: 'invalid', projectId: null };
+  try { return { state: (await accessToken(env, fetcher)) ? 'ok' : 'rejected', projectId: a.project_id }; }
+  catch { return { state: 'rejected', projectId: a.project_id }; }
+}
+
+export interface PhoneResult { phone: string; ok: boolean; removed?: boolean; error?: string }
+
+/**
+ * Rings every phone a driver registered, with a test message on the "Job offers" channel, and says what happened
+ * to each one. Phones Firebase no longer knows (app uninstalled) are removed, as with real alerts.
+ */
+export async function testDriver(env: Env, driverId: string, fetcher: typeof fetch = fetch): Promise<{ key: KeyState; phones: PhoneResult[] }> {
+  const k = await keyState(env, fetcher);
+  if (k.state !== 'ok') return { key: k.state, phones: [] };
+  const a = account(env)!;
+  const at = (await accessToken(env, fetcher))!;
+  const { results } = await env.DB.prepare('SELECT token FROM push_tokens WHERE driver_id=? ORDER BY last_seen_at DESC').bind(driverId).all<{ token: string }>();
+  const phones: PhoneResult[] = [];
+  for (const [i, { token }] of (results ?? []).entries()) {
+    const phone = `Phone ${i + 1} (…${token.slice(-6)})`;
+    try {
+      const res = await fetcher(`https://fcm.googleapis.com/v1/projects/${a.project_id}/messages:send`, {
+        method: 'POST', headers: { authorization: `Bearer ${at}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ message: {
+          token, data: { type: 'test' },
+          notification: { title: 'KiriGo test alert', body: 'Phone alerts are working. Nothing to do.' },
+          android: { priority: 'HIGH', ttl: '300s', notification: { channel_id: 'offers', sound: 'default', default_vibrate_timings: true, notification_priority: 'PRIORITY_MAX', visibility: 'PUBLIC' } },
+        } }),
+      });
+      if (res.ok) { phones.push({ phone, ok: true }); continue; }
+      const text = await res.text().catch(() => '');
+      if (res.status === 404 || /UNREGISTERED|INVALID_ARGUMENT.*registration/i.test(text)) {
+        await env.DB.prepare('DELETE FROM push_tokens WHERE token=?').bind(token).run();
+        phones.push({ phone, ok: false, removed: true, error: 'The app is no longer on this phone (removed from the list).' });
+      } else {
+        const m = /"message"\s*:\s*"([^"]{0,160})/.exec(text);
+        phones.push({ phone, ok: false, error: `Firebase answered ${res.status}${m ? `: ${m[1]}` : ''}` });
+      }
+    } catch (e) { phones.push({ phone, ok: false, error: `Couldn't reach Firebase (${String((e as Error)?.message ?? e).slice(0, 80)})` }); }
+  }
+  return { key: 'ok', phones };
+}

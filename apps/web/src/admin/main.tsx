@@ -19,7 +19,7 @@ function App() {
       <nav className="tabs">{tabs.map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}</nav>
       {tab === 'alerts' && <Alerts />}
       {tab === 'rides' && <RideApprovals />}
-      {tab === 'settings' && <Settings />}
+      {tab === 'settings' && <><PhoneAlerts /><Settings /></>}
       {tab === 'drivers' && <Drivers />}
       {tab === 'problems' && <Problems />}
       {tab === 'orders' && <Orders />}
@@ -103,6 +103,57 @@ function Settings() {
       ))}
       <button className="block" style={{ marginTop: 16 }} onClick={save}>Save settings</button>
       {msg && <p style={{ marginTop: 8 }}>{msg}</p>}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ phone alerts (Firebase)
+
+const KEY_TEXT: Record<string, { pill: string; text: string }> = {
+  ok: { pill: 'good', text: 'Set up and accepted by Google' },
+  missing: { pill: 'bad', text: 'Not set up: the FCM_SERVICE_ACCOUNT secret is missing, so phones are never rung' },
+  invalid: { pill: 'bad', text: "The FCM_SERVICE_ACCOUNT secret isn't a Firebase service-account key file — set it again from Firebase" },
+  rejected: { pill: 'bad', text: 'Google refused the key (deleted or disabled in Firebase?) — generate a new one and set it again' },
+};
+
+function PhoneAlerts() {
+  const { data, err, load } = useLoad<{ key: string; projectId: string | null; drivers: any[] }>('/api/admin/push/status');
+  const [driverId, setDriverId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<any>(null);
+  const [testErr, setTestErr] = useState('');
+  useEffect(() => { if (data?.drivers.length && !driverId) setDriverId(data.drivers[0].id); }, [data, driverId]);
+  const send = async () => {
+    setBusy(true); setResult(null); setTestErr('');
+    try { setResult(await call('/api/admin/push/test', { method: 'POST', body: { driverId } })); void load(); }
+    catch (e) { setTestErr(explain(e)); } finally { setBusy(false); }
+  };
+  const k = data ? KEY_TEXT[data.key] ?? KEY_TEXT.missing : null;
+  return (
+    <div className="card">
+      <div className="between"><h3>Phone alerts (Android app)</h3>{k && <span className={`pill ${k.pill}`}>{data!.key === 'ok' ? 'working' : 'not working'}</span>}</div>
+      {err && <div className="error">{err}</div>}
+      {!data ? <p className="muted">Checking…</p> : (<>
+        <p className="small">Firebase key: {k!.text}{data.projectId ? ` (project ${data.projectId})` : ''}.</p>
+        {data.drivers.length === 0 ? (
+          <p className="small muted">No driver has the KiriGo Driver app registered yet. Install the APK, sign in, allow notifications and go online once — the phone then appears here.</p>
+        ) : (<>
+          <label>Ring this driver's phone</label>
+          <div className="row">
+            <select value={driverId} onChange={(e) => { setDriverId(e.target.value); setResult(null); }}>
+              {data.drivers.map((d) => <option key={d.id} value={d.id}>{d.first_name} · {d.driver_code} — {d.phones} phone{d.phones === 1 ? '' : 's'}, last seen {fmt(d.last_seen)}{d.status !== 'approved' ? ` (${d.status})` : ''}</option>)}
+            </select>
+            <button onClick={send} disabled={busy || !driverId || data.key !== 'ok'}>{busy ? 'Sending…' : 'Send test alert'}</button>
+          </div>
+          <p className="small muted">The phone shows "KiriGo test alert" on the loud Job offers channel, even when locked. Tell the driver first.</p>
+        </>)}
+        {testErr && <div className="error">{testErr}</div>}
+        {result && (
+          result.key !== 'ok' ? <div className="error">{KEY_TEXT[result.key]?.text}</div>
+          : result.phones.length === 0 ? <div className="notice">{result.driver.first_name} has no phone registered any more.</div>
+          : <ul className="small">{result.phones.map((p: any) => <li key={p.phone}>{p.ok ? '✓' : '✗'} {p.phone}: {p.ok ? 'sent — Firebase accepted it. Ask the driver if it rang.' : p.error}</li>)}</ul>
+        )}
+      </>)}
     </div>
   );
 }
