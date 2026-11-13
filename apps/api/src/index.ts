@@ -6,6 +6,7 @@ import { readTicket } from './lib/handoff';
 import { checkPhotoUrl } from './lib/photos';
 import { ApiError } from './lib/util';
 import { admin } from './routes/admin';
+import { appdl } from './routes/appdl';
 import { auth } from './routes/auth';
 import { driver } from './routes/driver';
 import { pos } from './routes/pos';
@@ -56,6 +57,7 @@ app.route('/api/pos/shops/:shopId', pos);
 app.route('/api/driver', driver);
 app.route('/api/admin', admin);
 app.route('/auth', auth);
+app.route('/', appdl);   // the driver app download
 
 /** Private photos, through short-lived signed links only. */
 app.get('/p/:id', async (c) => {

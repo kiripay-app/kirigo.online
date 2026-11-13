@@ -5,7 +5,7 @@ import { ApiError, captureToken, client, explain, money, sessionClaims, setToken
 import { CameraShot, QrScan } from './camera';
 // the map (Leaflet + map tiles) loads only when the "where am I seen" map is opened: a much smaller first download
 const WhereMap = lazy(() => import('./where').then((m) => ({ default: m.WhereMap })));
-import { isApp, setupPush, startBackgroundLocation, stopBackgroundLocation } from './native';
+import { appUpdate, isApp, openDownload, setupPush, startBackgroundLocation, stopBackgroundLocation, type PublicApp } from './native';
 import { addPending, checkQrOffline, pending, refreshKey, syncPending, toDataUrl } from './offline';
 
 const call = client('driver', () => location.reload());
@@ -70,6 +70,37 @@ function SignIn() {
         <p>Sign in with your KiriPay account. You'll be paid into your KiriPay wallet, and you need two-step sign-in turned on in KiriPay.</p>
         <a className="btn block" href="/auth/start?app=driver">Sign in with KiriPay</a>
       </div>
+      <GetTheApp />
+    </div>
+  );
+}
+
+/** On the website (not inside the app): the Android app, with its version and size, when one is published. */
+function GetTheApp() {
+  const [app, setApp] = useState<PublicApp | null>(null);
+  useEffect(() => { if (!isApp) void appUpdate().then((r) => setApp(r?.app ?? null)); }, []);
+  if (isApp || !app?.available) return null;
+  return (
+    <div className="card">
+      <h3>Get the Android app</h3>
+      <p className="small">Job offers ring your phone even when it's locked, and your location keeps going while you use other apps. Version {app.version}, {((app.size ?? 0) / 1048576).toFixed(1)} MB.</p>
+      <a className="btn block" href={app.url} download>Download KiriGo Driver for Android</a>
+      <p className="small muted">After it downloads, open it and allow "Install unknown apps" for your browser when Android asks.</p>
+    </div>
+  );
+}
+
+/** Inside the app: a newer version is on kirigo.online. */
+function UpdateNotice() {
+  const [u, setU] = useState<PublicApp | null>(null);
+  const [manual, setManual] = useState(false);
+  useEffect(() => { if (isApp) void appUpdate().then((r) => { if (r?.newer) setU(r.app); }); }, []);
+  if (!u) return null;
+  return (
+    <div className="notice">
+      A new version of KiriGo Driver ({u.version}) is ready.{' '}
+      {manual ? <>Open <b>kirigo.online/driver</b> in Chrome and tap Download.</>
+        : <button className="secondary" onClick={() => void openDownload(u.url!).then((ok) => { if (!ok) setManual(true); })}>Download update</button>}
     </div>
   );
 }
@@ -235,6 +266,7 @@ function Home({ me, reload }: { me: any; reload: () => void }) {
     <div className="app">
       <Top right={<span className={`pill ${me.online ? 'good' : ''}`}>{me.online ? 'Online' : 'Offline'}</span>} />
       <nav className="tabs"><button className={tab === 'work' ? 'on' : ''} onClick={() => setTab('work')}>Work</button><button className={tab === 'send' ? 'on' : ''} onClick={() => setTab('send')}>Parcels</button><button className={tab === 'me' ? 'on' : ''} onClick={() => setTab('me')}>Me</button></nav>
+      <UpdateNotice />
       {err && <div className="error">{err}</div>}
       {queued > 0 && <div className="notice">{queued} handoff(s) saved offline — they'll send when you have signal. You're paid when they do.</div>}
       {tab === 'send' ? <SendJobs me={me} /> : tab === 'me' ? <Me me={me} reload={reload} /> : (

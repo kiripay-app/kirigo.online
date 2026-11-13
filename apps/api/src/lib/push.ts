@@ -51,23 +51,32 @@ export function alertFor(msg: any): Alert | null {
   }
 }
 
+/**
+ * Which Android channel (and sound) an alert uses on a phone. Apps with KiriGo's own sounds have their own channels:
+ * a channel's sound can't be changed once a phone has made it, and older apps don't have the sound files.
+ */
+export function androidChannel(channel: 'offers' | 'jobs', sounds: boolean) {
+  if (!sounds) return { channel_id: channel, sound: 'default' };
+  return channel === 'offers' ? { channel_id: 'kirigo_offers', sound: 'kirigo_offer' } : { channel_id: 'kirigo_jobs', sound: 'kirigo_job' };
+}
+
 /** Sends to every phone the driver has registered. Never throws: a failed alert must not fail the job itself. */
 export async function sendToDriver(env: Env, driverId: string, alert: Alert, fetcher: typeof fetch = fetch): Promise<number> {
   try {
     const a = account(env);
     if (!a) return 0;
-    const { results } = await env.DB.prepare('SELECT token FROM push_tokens WHERE driver_id=?').bind(driverId).all<{ token: string }>();
+    const { results } = await env.DB.prepare('SELECT token, sounds FROM push_tokens WHERE driver_id=?').bind(driverId).all<{ token: string; sounds: number }>();
     if (!results?.length) return 0;
     const at = await accessToken(env, fetcher);
     if (!at) return 0;
     let sent = 0;
-    for (const { token } of results) {
+    for (const { token, sounds } of results) {
       const res = await fetcher(`https://fcm.googleapis.com/v1/projects/${a.project_id}/messages:send`, {
         method: 'POST', headers: { authorization: `Bearer ${at}`, 'content-type': 'application/json' },
         body: JSON.stringify({ message: {
           token, data: alert.data,
           notification: { title: alert.title, body: alert.body },
-          android: { priority: 'HIGH', ttl: `${alert.ttlS}s`, notification: { channel_id: alert.channel, sound: 'default', default_vibrate_timings: true, notification_priority: 'PRIORITY_MAX', visibility: 'PUBLIC' } },
+          android: { priority: 'HIGH', ttl: `${alert.ttlS}s`, notification: { ...androidChannel(alert.channel, !!sounds), default_vibrate_timings: true, notification_priority: 'PRIORITY_MAX', visibility: 'PUBLIC' } },
         } }),
       });
       if (res.ok) { sent++; continue; }
@@ -103,9 +112,9 @@ export async function testDriver(env: Env, driverId: string, fetcher: typeof fet
   if (k.state !== 'ok') return { key: k.state, phones: [] };
   const a = account(env)!;
   const at = (await accessToken(env, fetcher))!;
-  const { results } = await env.DB.prepare('SELECT token FROM push_tokens WHERE driver_id=? ORDER BY last_seen_at DESC').bind(driverId).all<{ token: string }>();
+  const { results } = await env.DB.prepare('SELECT token, sounds FROM push_tokens WHERE driver_id=? ORDER BY last_seen_at DESC').bind(driverId).all<{ token: string; sounds: number }>();
   const phones: PhoneResult[] = [];
-  for (const [i, { token }] of (results ?? []).entries()) {
+  for (const [i, { token, sounds }] of (results ?? []).entries()) {
     const phone = `Phone ${i + 1} (…${token.slice(-6)})`;
     try {
       const res = await fetcher(`https://fcm.googleapis.com/v1/projects/${a.project_id}/messages:send`, {
@@ -113,7 +122,7 @@ export async function testDriver(env: Env, driverId: string, fetcher: typeof fet
         body: JSON.stringify({ message: {
           token, data: { type: 'test' },
           notification: { title: 'KiriGo test alert', body: 'Phone alerts are working. Nothing to do.' },
-          android: { priority: 'HIGH', ttl: '300s', notification: { channel_id: 'offers', sound: 'default', default_vibrate_timings: true, notification_priority: 'PRIORITY_MAX', visibility: 'PUBLIC' } },
+          android: { priority: 'HIGH', ttl: '300s', notification: { ...androidChannel('offers', !!sounds), default_vibrate_timings: true, notification_priority: 'PRIORITY_MAX', visibility: 'PUBLIC' } },
         } }),
       });
       if (res.ok) { phones.push({ phone, ok: true }); continue; }

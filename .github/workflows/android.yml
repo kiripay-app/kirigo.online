@@ -1,7 +1,12 @@
 name: Build KiriGo Driver APK
 
 # Builds the KiriGo Driver Android app (the driver web app wrapped, plus phone alerts and background location).
-# Run it from GitHub → Actions → "Build KiriGo Driver APK" → Run workflow, then download the APK from the run.
+# Runs on every push to main that touches the app (or GitHub → Actions → "Build KiriGo Driver APK" → Run workflow).
+#
+# With the signing secrets set (docs/driver-app.md), the APK is a signed release, numbered by this run (1.0.<run>),
+# and every build installs over the last one. With the Cloudflare secrets set too, it's published on kirigo.online
+# (kirigo.online/download/kirigo-driver.apk); drivers' apps then offer the update. Without the signing secrets you get a
+# test (debug) build in the run's Artifacts only: it is never published, and each one must be uninstalled before the next.
 on:
   workflow_dispatch:
   push:
@@ -10,6 +15,7 @@ on:
       - "apps/web/capacitor.config.json"
       - "apps/web/android-config/**"
       - "apps/web/src/driver/native.ts"
+      - "apps/web/android-config/res/**"
       - "apps/web/package.json"
       - ".github/workflows/android.yml"
 
@@ -18,6 +24,9 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-24.04   # pinned, like KiriPay's: newer images change the Android tools
+    env:
+      HAS_SIGNING: ${{ secrets.KIRIGO_KEYSTORE_BASE64 != '' }}
+      HAS_CLOUDFLARE: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -58,14 +67,59 @@ jobs:
           sed -i 's#</resources>#    <string name="capacitor_background_geolocation_notification_channel_name">Online status</string>\n</resources>#' android/app/src/main/res/values/strings.xml
           npx cap sync android
 
-      - name: Build debug APK
+      # each build gets a higher number, so Android installs it over the last one and the app can tell it's out of date
+      - name: Version this build (1.0.${{ github.run_number }})
+        working-directory: apps/web
+        run: |
+          sed -i -E 's/versionCode [0-9]+/versionCode ${{ github.run_number }}/; s/versionName "[^"]*"/versionName "1.0.${{ github.run_number }}"/' android/app/build.gradle
+          grep -E 'versionCode|versionName' android/app/build.gradle
+
+      - name: Build the APK
+        id: build
         working-directory: apps/web/android
+        env:
+          KEYSTORE_B64: ${{ secrets.KIRIGO_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KIRIGO_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KIRIGO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KIRIGO_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          if [ "$HAS_SIGNING" = "true" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/kirigo.jks"
+            ./gradlew assembleRelease --no-daemon \
+              -Pandroid.injected.signing.store.file="$RUNNER_TEMP/kirigo.jks" \
+              -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+              -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+              -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
+            rm -f "$RUNNER_TEMP/kirigo.jks"
+            cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/kirigo-driver.apk"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No signing key set up (KIRIGO_KEYSTORE_BASE64), so this is a test build: it won't be published, and each one must be uninstalled before installing the next."
+            ./gradlew assembleDebug --no-daemon
+            cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/kirigo-driver.apk"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/upload-artifact@v5
         with:
-          name: kirigo-driver-debug-apk
-          path: apps/web/android/app/build/outputs/apk/debug/app-debug.apk
+          name: kirigo-driver-apk
+          path: ${{ runner.temp }}/kirigo-driver.apk
           if-no-files-found: error
+
+      # signed builds from main go on kirigo.online; the APK first, then its description (which makes it "available")
+      - name: Publish on kirigo.online
+        if: steps.build.outputs.signed == 'true' && github.ref == 'refs/heads/main' && env.HAS_CLOUDFLARE == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          NOTES: ${{ github.event.head_commit.message }}
+        run: |
+          APK="$RUNNER_TEMP/kirigo-driver.apk" VERSION="1.0.${{ github.run_number }}" CODE="${{ github.run_number }}" node -e '
+            const fs = require("fs"), crypto = require("crypto"), b = fs.readFileSync(process.env.APK);
+            const notes = (process.env.NOTES || "").split("\n")[0].slice(0, 200);
+            fs.writeFileSync(process.env.RUNNER_TEMP + "/kirigo-driver.json", JSON.stringify({ version: process.env.VERSION, version_code: +process.env.CODE,
+              size: b.length, sha256: crypto.createHash("sha256").update(b).digest("hex"), uploaded_at: new Date().toISOString(), notes }));'
+          npx wrangler r2 object put kirigo-photos/app/kirigo-driver.apk --file "$RUNNER_TEMP/kirigo-driver.apk" --content-type application/vnd.android.package-archive --remote
+          npx wrangler r2 object put kirigo-photos/app/kirigo-driver.json --file "$RUNNER_TEMP/kirigo-driver.json" --content-type application/json --remote
+          echo "Published KiriGo Driver 1.0.${{ github.run_number }} on https://kirigo.online/download/kirigo-driver.apk" >> "$GITHUB_STEP_SUMMARY"

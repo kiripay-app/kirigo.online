@@ -150,9 +150,10 @@ d.post('/position', async (c) => {
 
 /** The Android app registers its phone for alerts (Firebase token). One phone can belong to one driver. */
 d.post('/push-token', async (c) => {
-  const b = await body(c, z.object({ token: z.string().min(20).max(4096), platform: z.enum(['android']).default('android') }));
-  await c.env.DB.prepare(`INSERT INTO push_tokens (token, driver_id, platform) VALUES (?,?,?)
-    ON CONFLICT(token) DO UPDATE SET driver_id=excluded.driver_id, last_seen_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')`).bind(b.token, meId(c), b.platform).run();
+  // sounds: this copy of the app has KiriGo's own alert sounds and the channels that play them
+  const b = await body(c, z.object({ token: z.string().min(20).max(4096), platform: z.enum(['android']).default('android'), sounds: z.boolean().default(false) }));
+  await c.env.DB.prepare(`INSERT INTO push_tokens (token, driver_id, platform, sounds) VALUES (?,?,?,?)
+    ON CONFLICT(token) DO UPDATE SET driver_id=excluded.driver_id, sounds=excluded.sounds, last_seen_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')`).bind(b.token, meId(c), b.platform, b.sounds ? 1 : 0).run();
   return c.json({ ok: true });
 });
 d.delete('/push-token', async (c) => {
