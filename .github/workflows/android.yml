@@ -65,6 +65,10 @@ jobs:
           grep -q kg_orange android/app/src/main/res/values/styles.xml || echo "::warning::Couldn't set the Android 12+ splash colour (styles.xml changed); the icon is still KiriGo's"
           # the name of the "KiriGo Driver is online" notification channel, as drivers see it in their phone settings
           sed -i 's#</resources>#    <string name="capacitor_background_geolocation_notification_channel_name">Online status</string>\n</resources>#' android/app/src/main/res/values/strings.xml
+          # the driver takes proof-of-delivery photos and scans parcel QR codes in the app, so it needs the camera
+          # (without this line Android never offers Camera in the app's permissions, and the in-app camera is always blocked)
+          sed -i 's#^\(\s*\)<application#\1<uses-permission android:name="android.permission.CAMERA" />\n\1<uses-feature android:name="android.hardware.camera" android:required="false" />\n&#' android/app/src/main/AndroidManifest.xml
+          grep -q 'permission.CAMERA' android/app/src/main/AndroidManifest.xml || { echo "::error::Couldn't add the camera permission to AndroidManifest.xml"; exit 1; }
           npx cap sync android
 
       # each build gets a higher number, so Android installs it over the last one and the app can tell it's out of date
