@@ -55,6 +55,9 @@ const MESSAGES: Record<string, string> = {
   NOT_APPROVED_YET: 'Your application is still being checked.',
   MONTHLY_FEE_DUE: 'Your monthly KiriGo fee is due. Pay it to go online.',
   GO_OFFLINE_FIRST: 'Go offline before changing your prices.',
+  NOT_AT_A_MEETING_POINT: 'This job is past the pickup.',
+  RATE_BAND_INVALID: 'The price range must be 0–90% below and 0–300% above.',
+  RECOMMENDED_RATES_INVALID: 'Recommended prices must be whole cents.',
   OFFER_GONE: 'That job was taken or withdrawn.',
   FACE_PHOTO_NEEDED: 'Save a face photo from the licence first. Riders compare it with the driver before getting in.',
   OFFER_EXPIRED: 'Too late — that offer expired.',
@@ -69,6 +72,7 @@ const MESSAGES: Record<string, string> = {
   ID_CHECK_REQUIRED: 'Your ID needs to be approved in KiriPay first (Verify your account → Level 2).',
 };
 export const explain = (e: unknown) => {
+  if (e instanceof ApiError && e.code === 'RATE_OUT_OF_RANGE' && Array.isArray(e.data?.errs)) return `${e.data.errs.join('. ')}.`;
   if (e instanceof ApiError) return MESSAGES[e.code] ?? e.code.replace(/_/g, ' ').toLowerCase();
   return String(e);
 };

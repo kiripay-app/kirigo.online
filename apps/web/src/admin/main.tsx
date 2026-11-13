@@ -1,6 +1,7 @@
 import { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { captureToken, client, explain, money, setToken } from '../api';
+import { PinMap } from './pin';
 
 const call = client('admin', () => location.reload());
 const fmt = (iso?: string | null) => (iso ? new Date(Date.parse(iso) + 12 * 3600_000).toISOString().replace('T', ' ').slice(0, 16).replace(/^(\d+)-(\d+)-(\d+)/, '$3/$2/$1') : '—');
@@ -12,7 +13,7 @@ function App() {
     <div className="app"><div className="top"><span className="logo">KiriGo Admin</span></div>
       <div className="card"><p>Sign in with your KiriPay admin account (two-step sign-in required).</p><a className="btn block" href="/auth/start?app=admin">Sign in with KiriPay</a></div></div>
   );
-  const tabs: [string, string][] = [['alerts', 'Alerts'], ['settings', 'Settings'], ['drivers', 'Drivers'], ['rides', 'Ride approvals'], ['problems', 'Problems'], ['orders', 'Orders'], ['flags', 'Ratings'], ['selfies', 'Shift selfies'], ['money', 'Money']];
+  const tabs: [string, string][] = [['alerts', 'Alerts'], ['settings', 'Settings'], ['prices', 'Prices'], ['landmarks', 'Landmarks'], ['drivers', 'Drivers'], ['rides', 'Ride approvals'], ['problems', 'Problems'], ['orders', 'Orders'], ['flags', 'Ratings'], ['selfies', 'Shift selfies'], ['money', 'Money']];
   return (
     <div className="app wide">
       <div className="top"><span className="logo">KiriGo Admin</span><button className="secondary" onClick={() => { setToken('admin', null); location.reload(); }}>Sign out</button></div>
@@ -20,6 +21,8 @@ function App() {
       {tab === 'alerts' && <Alerts />}
       {tab === 'rides' && <RideApprovals />}
       {tab === 'settings' && <><PhoneAlerts /><Settings /></>}
+      {tab === 'prices' && <Prices />}
+      {tab === 'landmarks' && <Landmarks />}
       {tab === 'drivers' && <Drivers />}
       {tab === 'problems' && <Problems />}
       {tab === 'orders' && <Orders />}
@@ -155,6 +158,84 @@ function PhoneAlerts() {
         )}
       </>)}
     </div>
+  );
+}
+
+// ------------------------------------------------------------------ guided prices
+
+const RATE_KINDS: [string, string][] = [['delivery_motorbike', 'Delivery by motorbike'], ['delivery_car', 'Delivery by car or van'], ['ride_car', 'Rides']];
+const RATE_FIELDS: [string, string][] = [['baseCents', 'Starting price $'], ['perKmCents', 'Per km $'], ['minimumCents', 'Minimum $']];
+
+/** The recommended rate card new drivers start with, and how far from it drivers may set their own prices. */
+function Prices() {
+  const { data, err, load, setErr } = useLoad<{ settings: any }>('/api/admin/settings');
+  const [s, setS] = useState<any>(null);
+  const [msg, setMsg] = useState('');
+  useEffect(() => { if (data) setS({ recommended_rates: data.settings.recommended_rates, rate_band: data.settings.rate_band, fair_price_pct: data.settings.fair_price_pct, ride_wait_min: data.settings.ride_wait_min }); }, [data]);
+  if (!s) return err ? <div className="error">{err}</div> : <p>Loading…</p>;
+  const setRate = (k: string, f: string, v: string) => setS({ ...s, recommended_rates: { ...s.recommended_rates, [k]: { ...s.recommended_rates[k], [f]: Math.round(Number(v || 0) * 100) } } });
+  const save = async () => { setMsg(''); setErr(''); try { await call('/api/admin/settings', { method: 'PUT', body: s }); setMsg('Saved'); void load(); } catch (e) { setErr(explain(e)); } };
+  const range = (c: number) => `$${((Math.floor((c * (100 - s.rate_band.belowPct)) / 1000) * 10) / 100).toFixed(2)}–$${((Math.ceil((c * (100 + s.rate_band.abovePct)) / 1000) * 10) / 100).toFixed(2)}`;
+  return (
+    <div className="card">
+      {err && <div className="error">{err}</div>}
+      <p className="small">New drivers start with these prices filled in. Drivers can change them, but only within the range below. Existing drivers keep their prices until they next save them.</p>
+      {RATE_KINDS.map(([k, label]) => (
+        <div key={k} style={{ marginBottom: 12 }}>
+          <h3>{label}</h3>
+          <div className="row">{RATE_FIELDS.map(([f, fl]) => (
+            <div key={f}><label>{fl}</label><input inputMode="decimal" defaultValue={(s.recommended_rates[k][f] / 100).toFixed(2)} onChange={(e) => setRate(k, f, e.target.value)} />
+              <p className="small">Drivers may set {range(s.recommended_rates[k][f])}</p></div>
+          ))}</div>
+        </div>
+      ))}
+      <h3>Range</h3>
+      <div className="row">
+        <div><label>Cheapest allowed (% below)</label><input inputMode="numeric" value={s.rate_band.belowPct} onChange={(e) => setS({ ...s, rate_band: { ...s.rate_band, belowPct: Number(e.target.value) } })} /></div>
+        <div><label>Dearest allowed (% above)</label><input inputMode="numeric" value={s.rate_band.abovePct} onChange={(e) => setS({ ...s, rate_band: { ...s.rate_band, abovePct: Number(e.target.value) } })} /></div>
+      </div>
+      <label>"Fair price" badge: up to this % above the suggested price</label><input inputMode="numeric" value={s.fair_price_pct} onChange={(e) => setS({ ...s, fair_price_pct: Number(e.target.value) })} />
+      <label>Ride requests wait for a driver for (minutes)</label><input inputMode="numeric" value={s.ride_wait_min} onChange={(e) => setS({ ...s, ride_wait_min: Number(e.target.value) })} />
+      <button className="block" style={{ marginTop: 16 }} onClick={save}>Save prices</button>
+      {msg && <p style={{ marginTop: 8 }}>{msg}</p>}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ landmarks
+
+/** Shared places riders and senders can pick in one tap. Tap the map to drop the pin where the driver should stop. */
+function Landmarks() {
+  const { data, err, load, setErr } = useLoad<any[]>('/api/admin/landmarks');
+  const [f, setF] = useState({ label: '', note: '', side: '' });
+  const [pin, setPin] = useState<{ lat: number; lng: number } | null>(null);
+  const add = async () => {
+    if (!pin) return;
+    setErr('');
+    try { await call('/api/admin/landmarks', { method: 'POST', body: { label: f.label, note: f.note, side: f.side || null, ...pin } }); setF({ label: '', note: '', side: '' }); setPin(null); void load(); }
+    catch (e) { setErr(explain(e)); }
+  };
+  const remove = async (id: string, label: string) => { if (!confirm(`Remove ${label}?`)) return; try { await call(`/api/admin/landmarks/${id}`, { method: 'DELETE' }); void load(); } catch (e) { setErr(explain(e)); } };
+  return (
+    <>
+      <div className="card">
+        <h3>Add a landmark</h3>
+        {err && <div className="error">{err}</div>}
+        <p className="small">Tap the map where a driver should stop, e.g. the hospital's main gate.</p>
+        <PinMap pin={pin} onPin={setPin} others={data ?? []} />
+        <label>Name</label><input placeholder="e.g. Tungaru Central Hospital" maxLength={40} value={f.label} onChange={(e) => setF({ ...f, label: e.target.value })} />
+        <label>Note for the driver</label><input placeholder="e.g. Main gate" maxLength={120} value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} />
+        <label>Side of the road</label>
+        <select value={f.side} onChange={(e) => setF({ ...f, side: e.target.value })}><option value="">Not set</option><option value="lagoon">Lagoon side</option><option value="ocean">Ocean side</option></select>
+        <button className="block" style={{ marginTop: 10 }} disabled={!pin || !f.label.trim()} onClick={add}>Add landmark</button>
+      </div>
+      <div className="card">
+        <h3>Landmarks</h3>
+        {!data?.length ? <p className="small">None yet.</p> : <table><tbody>{data.map((l) => (
+          <tr key={l.id}><td>{l.label}</td><td className="small">{l.note}{l.side ? ` · ${l.side} side` : ''}</td><td><button className="secondary" onClick={() => remove(l.id, l.label)}>Remove</button></td></tr>
+        ))}</tbody></table>}
+      </div>
+    </>
   );
 }
 

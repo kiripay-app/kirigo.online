@@ -3,7 +3,7 @@
 // 3. The sender picks a bid and pays it into a KiriPay hold. 4. It runs as a normal delivery from the
 // 'kirigo-send' placeholder shop: the driver collects from the sender, hands over to the recipient with the
 // code + photo and is paid on the spot. Nothing else is in the hold, so the order closes there and then.
-import { haversine, roadDistance, type LatLng } from '@kirigo/shared';
+import { haversine, isFairPrice, rateKindFor, recommendedPrice, roadDistance, type LatLng, type Settings } from '@kirigo/shared';
 import type { Actor, Env } from '../env';
 import { feeOkSql } from './fees';
 import { onlineNear, pushToDriver, road } from './matching';
@@ -20,7 +20,12 @@ export interface SendJob {
   pickup_lat: number; pickup_lng: number; pickup_note: string; drop_lat: number; drop_lng: number; drop_note: string;
   distance_m: number; item: string; description: string; recipient_name: string; recipient_phone: string; recipient_user_id: string | null;
   pickup_after: string; deliver_by: string; order_id: string | null; created_at: string; closed_at: string | null;
+  pickup_side: 'lagoon' | 'ocean' | null; drop_side: 'lagoon' | 'ocean' | null;
 }
+
+/** KiriGo's suggested price for a parcel: the recommended delivery rate for the vehicle (motorbike or car). */
+const suggested = (s: Settings, vehicleType: string | null | undefined, distanceM: number) =>
+  recommendedPrice(s.recommended_rates[rateKindFor('delivery', vehicleType)], distanceM);
 
 
 export async function getJob(env: Env, id: string): Promise<SendJob> {
@@ -30,7 +35,7 @@ export async function getJob(env: Env, id: string): Promise<SendJob> {
 }
 
 export async function postJob(env: Env, customerId: string, b: {
-  pickup: LatLng; pickupNote: string; dropoff: LatLng; dropNote: string; item: string; description: string;
+  pickup: LatLng; pickupNote: string; pickupSide?: string | null; dropoff: LatLng; dropNote: string; dropSide?: string | null; item: string; description: string;
   recipientName: string; recipientPhone: string; recipientUserId: string | null; pickupAfter: string; deliverBy: string; sourceRef: string;
 }) {
   const s = await loadSettings(env.DB);
@@ -49,9 +54,10 @@ export async function postJob(env: Env, customerId: string, b: {
   await env.DB.batch([
     env.DB.prepare('INSERT INTO customers (id) VALUES (?) ON CONFLICT(id) DO NOTHING').bind(customerId),
     env.DB.prepare(`INSERT INTO send_jobs (id, customer_id, source_ref, pickup_lat, pickup_lng, pickup_note, drop_lat, drop_lng, drop_note, distance_m, item, description,
-      recipient_name, recipient_phone, recipient_user_id, pickup_after, deliver_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      recipient_name, recipient_phone, recipient_user_id, pickup_after, deliver_by, pickup_side, drop_side) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .bind(id, customerId, b.sourceRef, b.pickup.lat, b.pickup.lng, b.pickupNote, b.dropoff.lat, b.dropoff.lng, b.dropNote, distanceM, b.item, b.description,
-        b.recipientName, b.recipientPhone, b.recipientUserId, new Date(Math.max(after, Date.now())).toISOString(), new Date(by).toISOString()),
+        b.recipientName, b.recipientPhone, b.recipientUserId, new Date(Math.max(after, Date.now())).toISOString(), new Date(by).toISOString(),
+        b.pickupSide ?? null, b.dropSide ?? null),
   ]);
   // let drivers who are online right now (and near the pickup) know there is something to bid on
   const near = await onlineNear(env, b.pickup, Math.max(s.pickup_radius_km, 5));
@@ -66,10 +72,12 @@ export async function postJob(env: Env, customerId: string, b: {
 /** What the sender sees: the job and every live bid, cheapest first. */
 export async function jobView(env: Env, j: SendJob) {
   const { results } = await env.DB.prepare('SELECT * FROM send_bids WHERE job_id=? AND withdrawn_at IS NULL ORDER BY price_cents, created_at').bind(j.id).all<any>();
+  const s = await loadSettings(env.DB);
   const bids = [];
   for (const b of results ?? []) {
     const card = await driverCard(env, b.driver_id);
-    if (card) bids.push({ bidId: b.id, priceCents: b.price_cents, note: b.note, at: b.updated_at, driver: card });
+    if (card) bids.push({ bidId: b.id, priceCents: b.price_cents, note: b.note, at: b.updated_at, driver: card,
+      fairPrice: isFairPrice(b.price_cents, suggested(s, card.vehicle?.type, j.distance_m), s.fair_price_pct) });
   }
   return { ...jobBasics(j), recipient: { name: j.recipient_name, phone: j.recipient_phone, isMember: !!j.recipient_user_id }, bids, orderId: j.order_id };
 }
@@ -78,7 +86,7 @@ function jobBasics(j: SendJob) {
   return {
     id: j.id, status: j.status, item: j.item, description: j.description, distanceM: j.distance_m,
     pickupAfter: j.pickup_after, deliverBy: j.deliver_by, createdAt: j.created_at,
-    pickup: { lat: j.pickup_lat, lng: j.pickup_lng, note: j.pickup_note }, dropoff: { lat: j.drop_lat, lng: j.drop_lng, note: j.drop_note },
+    pickup: { lat: j.pickup_lat, lng: j.pickup_lng, note: j.pickup_note, side: j.pickup_side ?? null }, dropoff: { lat: j.drop_lat, lng: j.drop_lng, note: j.drop_note, side: j.drop_side ?? null },
   };
 }
 
@@ -99,13 +107,15 @@ export async function openJobs(env: Env, driverId: string, at: LatLng | null) {
       (SELECT COUNT(*) FROM send_bids x WHERE x.job_id=j.id AND x.withdrawn_at IS NULL) AS bid_count
     FROM send_jobs j LEFT JOIN send_bids b ON b.job_id=j.id AND b.driver_id=?
     WHERE j.status='open' AND j.deliver_by > ? ORDER BY j.deliver_by LIMIT 100`).bind(driverId, nowIso()).all<any>();
-  const v = await env.DB.prepare('SELECT can_bulky FROM vehicles WHERE driver_id=? AND active=1').bind(driverId).first<any>();
+  const v = await env.DB.prepare('SELECT type, can_bulky FROM vehicles WHERE driver_id=? AND active=1').bind(driverId).first<any>();
+  const s = await loadSettings(env.DB);
   return (results ?? [])
     .filter((j) => j.customer_id !== driverId && (j.item !== 'bulky' || v?.can_bulky))
     .map((j) => ({
       id: j.id, item: j.item, description: j.description, distanceM: j.distance_m, pickupAfter: j.pickup_after, deliverBy: j.deliver_by,
       pickupArea: area(j.pickup_lat, j.pickup_lng), dropArea: area(j.drop_lat, j.drop_lng),
       toPickupM: at ? Math.round(haversine(at, { lat: j.pickup_lat, lng: j.pickup_lng })) : null,
+      suggestedCents: suggested(s, v?.type, j.distance_m),
       bids: j.bid_count, myBid: j.my_bid && !j.my_withdrawn ? { bidId: j.my_bid, priceCents: j.my_price, note: j.my_note } : null,
     }))
     .sort((a, b) => (a.toPickupM ?? 0) - (b.toPickupM ?? 0));
@@ -148,11 +158,11 @@ export async function chooseBid(env: Env, j: SendJob, bidId: string, holdId: str
   // the order goes in only while the job is still open; then the job points at it (one transaction)
   const ins = await env.DB.batch([
     env.DB.prepare(`INSERT INTO orders (id, kind, service, source, source_ref, shop_id, customer_id, fallback_json, pickup_lat, pickup_lng, drop_lat, drop_lng,
-      landmark, drop_note, size, distance_m, goods_cents, delivery_cents, hold_id, status, share_phone, send_job_id, deliver_by)
-      SELECT ?,'delivery','delivery','kiripay_send',?,?,?,'[]',?,?,?,?,?,?,?,?,0,?,?,'PAID_HELD',?,?,?
+      landmark, drop_note, size, distance_m, goods_cents, delivery_cents, hold_id, status, share_phone, send_job_id, deliver_by, pickup_side, drop_side)
+      SELECT ?,'delivery','delivery','kiripay_send',?,?,?,'[]',?,?,?,?,?,?,?,?,0,?,?,'PAID_HELD',?,?,?,?,?
       WHERE EXISTS (SELECT 1 FROM send_jobs WHERE id=? AND status='open') ON CONFLICT(source, source_ref, kind) DO NOTHING`)
       .bind(id, `${j.id}:${bid.id}`, SEND_SHOP, j.customer_id, j.pickup_lat, j.pickup_lng, j.drop_lat, j.drop_lng, j.pickup_note, j.drop_note,
-        j.item === 'document' ? 'small' : j.item, j.distance_m, bid.price_cents, holdId, sharePhone ? 1 : 0, j.id, j.deliver_by, j.id),
+        j.item === 'document' ? 'small' : j.item, j.distance_m, bid.price_cents, holdId, sharePhone ? 1 : 0, j.id, j.deliver_by, j.pickup_side ?? null, j.drop_side ?? null, j.id),
     env.DB.prepare("UPDATE send_jobs SET status='chosen', order_id=?, closed_at=? WHERE id=? AND status='open' AND EXISTS (SELECT 1 FROM orders WHERE id=?)").bind(id, nowIso(), j.id, id),
   ]);
   if (!ins[0]?.meta.changes || !ins[1]?.meta.changes) throw new ApiError('JOB_CLOSED', 409);

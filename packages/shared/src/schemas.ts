@@ -5,6 +5,10 @@ import {
 
 const cents = z.number().int().min(0).max(10_000_000);
 export const latLng = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180) });
+/** Which side of the road: on Tarawa the lagoon side and the ocean side are how people say it. */
+export const SIDES = ['lagoon', 'ocean'] as const;
+export type Side = (typeof SIDES)[number];
+export const side = z.enum(SIDES).nullable().default(null);
 
 export const rateCardSchema = z.object({
   baseCents: cents, perKmCents: cents, minimumCents: cents, nightCents: cents, bulkyCents: cents,
@@ -26,6 +30,7 @@ export const createOrderRequest = z.object({
   sourceRef: z.string().min(1).max(120),
   goodsCents: cents.refine((v) => v > 0, 'goods amount must be more than zero'),
   landmark: z.string().max(200).default(''),
+  dropSide: side,
   sharePhone: z.boolean().default(false),
   /** KiriPay hold id: the customer paid in the KiriPay app before this call */
   holdId: z.string().min(1),
@@ -53,6 +58,7 @@ export const driverApplyRequest = z.object({
     type: z.enum(VEHICLE_TYPES),
     plate: z.string().max(20).default(''),
     canBulky: z.boolean().default(false),
+    colour: z.string().trim().max(30).default(''),
     photoId: z.string().min(1),
   }),
   licencePhotoId: z.string().min(1).optional(),
@@ -106,6 +112,8 @@ export const createRideRequest = z.object({
   holdId: z.string().min(1),
   pickupNote: z.string().max(200).default(''),
   dropNote: z.string().max(200).default(''),
+  pickupSide: side,
+  dropSide: side,
   sharePhone: z.boolean().default(false),
   /** KiriPay members (from the rider's contacts) to follow this trip */
   buddies: z.array(z.string().regex(/^[A-Za-z0-9_-]{3,80}$/)).max(5).default([]),
@@ -115,8 +123,31 @@ export const createRideRequest = z.object({
 export const rideApplyRequest = z.object({
   seats: z.number().int().min(1).max(12),
   roadworthyPhotoId: z.string().min(1),
+  colour: z.string().trim().max(30).default(''),
   rateCard: rideRateCardSchema,
 });
+
+/** No driver nearby: the request waits and drivers coming online are told. Nothing is paid until a driver is chosen. */
+export const rideWaitRequest = z.object({
+  pickup: latLng,
+  dropoff: latLng,
+  seats: z.number().int().min(1).max(12).default(1),
+  pickupNote: z.string().max(200).default(''),
+  pickupSide: side,
+});
+
+/** A saved place (Home, Work, or anything the member names). */
+export const PLACE_KINDS = ['home', 'work', 'other'] as const;
+export const placeRequest = z.object({
+  kind: z.enum(PLACE_KINDS).default('other'),
+  label: z.string().trim().min(1).max(40),
+  lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180),
+  side,
+  note: z.string().trim().max(120).default(''),
+});
+
+/** Rider replies to "I'm here" with one tap. */
+export const QUICK_REPLIES = ['Coming out now', 'Coming, 2 minutes', 'Coming, 5 minutes', 'I\'m waiting by the road', 'Please come closer', 'Please call me'] as const;
 
 // ---------------------------------------------------------------- KiriGo Send
 
@@ -125,8 +156,8 @@ export type SendItem = (typeof SEND_ITEMS)[number];
 
 /** A sender posts a parcel job; drivers bid on it. Times are ISO strings. */
 export const sendJobRequest = z.object({
-  pickup: latLng, pickupNote: z.string().max(200).default(''),
-  dropoff: latLng, dropNote: z.string().max(200).default(''),
+  pickup: latLng, pickupNote: z.string().max(200).default(''), pickupSide: side,
+  dropoff: latLng, dropNote: z.string().max(200).default(''), dropSide: side,
   item: z.enum(SEND_ITEMS), description: z.string().max(200).default(''),
   recipientName: z.string().trim().min(1).max(60),
   recipientPhone: z.string().trim().max(30).default(''),

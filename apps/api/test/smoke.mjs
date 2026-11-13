@@ -54,7 +54,7 @@ async function main() {
   const licencePhoto = (await photo((p, o) => call(`/api/driver/signup${p}`, { ...o, headers: { ...o.headers, authorization: `Bearer ${driverToken}` } }), '/photos?kind=licence')).photoId;
   const applied = await call('/api/driver/signup/apply', { method: 'POST', headers: { authorization: `Bearer ${driverToken}` }, body: {
     firstName: 'Teeta', vehicle: { type: 'motorbike', plate: 'T 1234', canBulky: false, photoId: vehiclePhoto }, licencePhotoId: licencePhoto,
-    rateCard: { baseCents: 200, perKmCents: 100, minimumCents: 300, nightCents: 0, bulkyCents: 0 }, acceptTerms: true,
+    rateCard: { baseCents: 100, perKmCents: 40, minimumCents: 200, nightCents: 0, bulkyCents: 0 }, acceptTerms: true,
   } });
   driverToken = applied.token;
   ok(/^KG-\d{4}$/.test(applied.driverCode), `driver applied as ${applied.driverCode}`);

@@ -10,13 +10,13 @@ const LABEL_BY_KIND: Record<string, Partial<Record<string, string>>> = {
 
 export async function driverCard(env: Env, driverId: string | null) {
   if (!driverId) return null;
-  const d = await env.DB.prepare(`SELECT d.id, d.driver_code, d.first_name, d.rating_avg, d.rating_count, d.deliveries, v.type, v.plate, v.photo_id
+  const d = await env.DB.prepare(`SELECT d.id, d.driver_code, d.first_name, d.rating_avg, d.rating_count, d.deliveries, v.type, v.plate, v.photo_id, v.colour
     FROM drivers d LEFT JOIN vehicles v ON v.driver_id=d.id AND v.active=1 WHERE d.id=?`).bind(driverId).first<any>();
   if (!d) return null;
   return {
     driverId: d.id, driverCode: d.driver_code, firstName: d.first_name, verified: true,
     rating: displayRating(d.rating_avg, d.rating_count), deliveries: d.deliveries,
-    vehicle: { type: d.type, plate: d.plate, photoUrl: d.photo_id ? await photoUrl(env, d.photo_id) : null },
+    vehicle: { type: d.type, plate: d.plate, colour: d.colour || '', photoUrl: d.photo_id ? await photoUrl(env, d.photo_id) : null },
   };
 }
 
@@ -42,6 +42,9 @@ export async function orderView(env: Env, o: OrderRow, viewer: Actor) {
       sharing: viewer.type === 'driver' ? !!(await env.DB.prepare('SELECT 1 FROM trip_buddies WHERE order_id=? AND stopped_at IS NULL').bind(o.id).first()) : undefined,
       faceCheck: viewer.type === 'customer' && o.driver_id && ['DRIVER_ASSIGNED', 'AT_SHOP'].includes(o.status) ? await faceUrls(env, o.driver_id) : undefined,
     } : undefined,
+    // easier pickups: which side of the road, and when the driver tapped "I'm here"
+    sides: { pickup: o.pickup_side ?? null, dropoff: o.drop_side ?? null },
+    here: o.here_at ? { at: o.here_at } : null,
     source: o.source, sourceRef: o.source_ref,
     shop: { id: o.shop_id, name: shop?.name ?? '', pickup: { lat: o.pickup_lat, lng: o.pickup_lng }, note: shop?.pickup_note ?? '' },
     dropoff: driverMayLocate ? { lat: o.drop_lat, lng: o.drop_lng, landmark: o.landmark } : { area: approxArea(o.drop_lat, o.drop_lng) },

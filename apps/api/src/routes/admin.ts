@@ -1,3 +1,5 @@
+import { addLandmark, deletePlace } from '../lib/places';
+import { placeRequest } from '@kirigo/shared';
 import { adminRuling, DEFAULT_SETTINGS } from '@kirigo/shared';
 import { Hono } from 'hono';
 import { z } from 'zod';
@@ -22,10 +24,30 @@ admin.get('/settings', async (c) => {
   return c.json({ settings: s, missingForLaunch: missingForLaunch(s) });
 });
 
+/** Shared landmarks riders can pick (airport, hospital, wharf…), pinned on the map by admins. */
+admin.get('/landmarks', async (c) => {
+  const { results } = await c.env.DB.prepare("SELECT id, label, lat, lng, side, note FROM places WHERE owner_id IS NULL AND active=1 ORDER BY label").all();
+  return c.json(results ?? []);
+});
+admin.post('/landmarks', async (c) => {
+  const b = await body(c, placeRequest.omit({ kind: true }));
+  return c.json({ id: await addLandmark(c.env, b) }, 201);
+});
+admin.delete('/landmarks/:id', async (c) => {
+  await deletePlace(c.env, null, c.req.param('id'));
+  return c.json({ ok: true });
+});
+
 admin.put('/settings', async (c) => {
   const raw = await c.req.json().catch(() => ({}));
   const patch: Record<string, unknown> = {};
   for (const k of Object.keys(DEFAULT_SETTINGS)) if (k in raw) patch[k] = raw[k];
+  // guided prices: whole cents, a sensible band
+  if ('recommended_rates' in patch) {
+    const ok = z.record(z.enum(['delivery_motorbike', 'delivery_car', 'ride_car']), z.object({ baseCents: z.number().int().min(0).max(100_000), perKmCents: z.number().int().min(0).max(100_000), minimumCents: z.number().int().min(0).max(100_000) }).strict());
+    if (!ok.safeParse(patch.recommended_rates).success || Object.keys(patch.recommended_rates as object).length !== 3) throw new ApiError('RECOMMENDED_RATES_INVALID', 422);
+  }
+  if ('rate_band' in patch && !z.object({ belowPct: z.number().int().min(0).max(90), abovePct: z.number().int().min(0).max(300) }).strict().safeParse(patch.rate_band).success) throw new ApiError('RATE_BAND_INVALID', 422);
   if (patch.delivery_open === true) {
     const missing = missingForLaunch({ ...(await loadSettings(c.env.DB)), ...patch } as any);
     if (missing.length) throw new ApiError('SET_THESE_FIRST', 422, { missing });

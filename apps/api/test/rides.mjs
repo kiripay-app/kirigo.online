@@ -31,13 +31,14 @@ async function main() {
   dt = (await call(`/auth/dev?user=${DRV}&name=Bwebwe`)).token;
   const su = (p, o = {}) => call(`/api/driver/signup${p}`, { ...o, headers: { ...(o.headers ?? {}), authorization: `Bearer ${dt}` } });
   const v = (await pic(su, '/photos?kind=vehicle')).photoId, l = (await pic(su, '/photos?kind=licence')).photoId;
-  const ap = await su('/apply', { method: 'POST', body: { firstName: 'Bwebwe', vehicle: { type: 'car', plate: 'C 77', photoId: v }, licencePhotoId: l, rateCard: { baseCents: 200, perKmCents: 100, minimumCents: 300, nightCents: 0, bulkyCents: 0 }, acceptTerms: true } });
+  const ap = await su('/apply', { method: 'POST', body: { firstName: 'Bwebwe', vehicle: { type: 'car', plate: 'C 77', photoId: v }, licencePhotoId: l, rateCard: { baseCents: 200, perKmCents: 60, minimumCents: 350, nightCents: 0, bulkyCents: 0 }, acceptTerms: true } });
   dt = ap.token;
   await admin(`/drivers/${ap.driverId}/approve`, { method: 'POST', body: { licenceSeen: true, licenceMatchesKyc: true, licenceExpiry: '2031-01-01' } });
   const notYet = await drv('/services', { method: 'PUT', body: { deliveries: true, rides: true } }).then(() => false, () => true);
   ok(notYet, 'cannot switch rides on before ride approval');
   const rw = (await pic(drv, '/photos?kind=vehicle')).photoId;
-  await drv('/rides/apply', { method: 'POST', body: { seats: 4, roadworthyPhotoId: rw, rateCard: { baseCents: 300, perKmCents: 150, minimumCents: 500, nightCents: 0, waitPerMinCents: 50, cancelCents: 300 } } });
+  await drv('/rides/apply', { method: 'POST', body: { seats: 4, roadworthyPhotoId: rw, rateCard: { baseCents: 200, perKmCents: 50, minimumCents: 300, nightCents: 0, waitPerMinCents: 50, cancelCents: 300 } } });
+  await admin(`/drivers/${ap.driverId}/face-photo`, { method: 'POST', raw: jpeg, headers: { 'content-type': 'image/jpeg' } });
   const noRecord = await admin(`/drivers/${ap.driverId}/rides/approve`, { method: 'POST', body: { roadworthyChecked: true } }).then(() => false, (e) => String(e).includes('NOT_ENOUGH_RECORD'));
   ok(noRecord, 'ride approval needs a delivery record (20 deliveries, 4.3) unless overridden');
   await admin(`/drivers/${ap.driverId}/rides/approve`, { method: 'POST', body: { roadworthyChecked: true, override: true, note: 'launch driver' } });

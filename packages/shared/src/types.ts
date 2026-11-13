@@ -98,7 +98,18 @@ export interface Settings {
   alert_offroute_m: number;
   alert_stop_min: number;
   alert_overtime_factor: number;
+  // guided prices: KiriGo recommends a rate card, drivers set their own within a band around it
+  recommended_rates: RecommendedRates;
+  rate_band: { belowPct: number; abovePct: number };
+  fair_price_pct: number;          // "Fair price" badge: no more than this % above the recommended price
+  // a ride request with no driver nearby waits this long for one to come online
+  ride_wait_min: number;
 }
+
+/** The three numbers drivers compare: base, per km, minimum. */
+export interface RateCore { baseCents: Cents; perKmCents: Cents; minimumCents: Cents }
+export type RateKind = 'delivery_motorbike' | 'delivery_car' | 'ride_car';
+export type RecommendedRates = Record<RateKind, RateCore>;
 
 export const DEFAULT_SETTINGS: Settings = {
   monthly_fee_cents: null,
@@ -144,6 +155,14 @@ export const DEFAULT_SETTINGS: Settings = {
   alert_offroute_m: 500,
   alert_stop_min: 5,
   alert_overtime_factor: 1.5,
+  recommended_rates: {
+    delivery_motorbike: { baseCents: 100, perKmCents: 40, minimumCents: 200 },
+    delivery_car: { baseCents: 200, perKmCents: 60, minimumCents: 350 },
+    ride_car: { baseCents: 200, perKmCents: 50, minimumCents: 300 },
+  },
+  rate_band: { belowPct: 30, abovePct: 50 },
+  fair_price_pct: 10,
+  ride_wait_min: 10,
 };
 
 export interface RideRateCard {

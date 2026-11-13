@@ -1,3 +1,4 @@
+import { placeRequest, rideWaitRequest, latLng } from '@kirigo/shared';
 import { createOrderRequest, createRideRequest, problemRequest, sendChooseRequest, sendJobRequest, quoteRequest, rateRequest, rideQuoteRequest, roadDistance, PRE_PICKUP } from '@kirigo/shared';
 import { Hono } from 'hono';
 import { z } from 'zod';
@@ -5,7 +6,9 @@ import type { AppEnv } from '../env';
 import { requireKiriPay } from '../lib/auth';
 import { handoffCode, handoffToken, trackTicket } from '../lib/handoff';
 import { kiripay, mockCreateHold } from '../lib/kiripay';
-import { makeQuote, offer, priceDrivers, road, sortOptions, type QuoteOption } from '../lib/matching';
+import { makeQuote, offer, priceDrivers, pushToDriver, road, sortOptions, type QuoteOption } from '../lib/matching';
+import { deletePlace, listPlaces, savePlace } from '../lib/places';
+import { cancelWait, checkWait, closeWaits, getWait, startWait } from '../lib/waits';
 import { moveMoney } from '../lib/money';
 import { cancelOrder, eventStmt, getOrder, settleAccept, type OrderRow } from '../lib/orders';
 import { savePhoto } from '../lib/photos';
@@ -69,10 +72,10 @@ svc.post('/orders', async (c) => {
   const ins = await c.env.DB.batch([
     c.env.DB.prepare('INSERT INTO customers (id) VALUES (?) ON CONFLICT(id) DO NOTHING').bind(customerId),
     c.env.DB.prepare(`INSERT INTO orders (id, kind, source, source_ref, shop_id, customer_id, quote_id, fallback_json, pickup_lat, pickup_lng, drop_lat, drop_lng,
-      landmark, size, distance_m, goods_cents, delivery_cents, hold_id, status, share_phone) VALUES (?,'delivery',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PAID_HELD',?)
+      landmark, size, distance_m, goods_cents, delivery_cents, hold_id, status, share_phone, drop_side) VALUES (?,'delivery',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'PAID_HELD',?,?)
       ON CONFLICT(source, source_ref, kind) DO NOTHING`)
       .bind(id, b.source, b.sourceRef, q.shop_id, customerId, q.id, JSON.stringify(fallback), shop.pickup_lat, shop.pickup_lng, q.drop_lat, q.drop_lng,
-        b.landmark, q.size, q.distance_m, b.goodsCents, chosen.priceCents, b.holdId, b.sharePhone ? 1 : 0),
+        b.landmark, q.size, q.distance_m, b.goodsCents, chosen.priceCents, b.holdId, b.sharePhone ? 1 : 0, b.dropSide),
     c.env.DB.prepare('UPDATE quotes SET used_by_order=? WHERE id=? AND used_by_order IS NULL').bind(id, q.id),
   ]);
   if (!ins[1]?.meta.changes) {
@@ -210,6 +213,8 @@ svc.post('/orders/:id/messages', async (c) => {
   const b = await body(c, z.object({ body: z.string().min(1).max(500) }));
   if (o.closed_at && Date.parse(o.closed_at) < Date.now() - 24 * 3600_000) throw new ApiError('CHAT_CLOSED', 409);
   await c.env.DB.prepare('INSERT INTO messages (order_id, from_type, from_id, body) VALUES (?,?,?,?)').bind(o.id, 'customer', o.customer_id, b.body).run();
+  // the driver's phone buzzes, so a quick reply ("Coming, 2 minutes") reaches them while driving
+  if (o.driver_id && !o.closed_at) await pushToDriver(c.env, o.driver_id, { type: 'message', orderId: o.id, body: b.body });
   return c.json({ ok: true });
 });
 
@@ -263,10 +268,10 @@ svc.post('/rides', async (c) => {
   const ins = await c.env.DB.batch([
     c.env.DB.prepare('INSERT INTO customers (id) VALUES (?) ON CONFLICT(id) DO NOTHING').bind(customerId),
     c.env.DB.prepare(`INSERT INTO orders (id, kind, service, source, source_ref, shop_id, customer_id, quote_id, fallback_json, pickup_lat, pickup_lng, drop_lat, drop_lng,
-      landmark, drop_note, size, seats, distance_m, goods_cents, delivery_cents, hold_id, status, share_phone)
-      VALUES (?,'delivery','ride','kiripay_ride',?,?,?,?,?,?,?,?,?,?,?,'small',?,?,?,?,?,'PAID_HELD',?) ON CONFLICT(source, source_ref, kind) DO NOTHING`)
+      landmark, drop_note, size, seats, distance_m, goods_cents, delivery_cents, hold_id, status, share_phone, pickup_side, drop_side)
+      VALUES (?,'delivery','ride','kiripay_ride',?,?,?,?,?,?,?,?,?,?,?,'small',?,?,?,?,?,'PAID_HELD',?,?,?) ON CONFLICT(source, source_ref, kind) DO NOTHING`)
       .bind(id, b.sourceRef, RIDE_SHOP, customerId, q.id, JSON.stringify(fallback), plat, plng, q.drop_lat, q.drop_lng, b.pickupNote, b.dropNote,
-        seats, q.distance_m, s.ride_buffer_cents, chosen.priceCents, b.holdId, b.sharePhone ? 1 : 0),
+        seats, q.distance_m, s.ride_buffer_cents, chosen.priceCents, b.holdId, b.sharePhone ? 1 : 0, b.pickupSide, b.dropSide),
     c.env.DB.prepare('UPDATE quotes SET used_by_order=? WHERE id=? AND used_by_order IS NULL').bind(id, q.id),
   ]);
   if (!ins[1]?.meta.changes) {
@@ -277,7 +282,27 @@ svc.post('/rides', async (c) => {
   const o = await getOrder(c.env.DB, id);
   if (b.buddies.length) await addBuddies(c.env, o, b.buddies);
   await offer(c.env, o, chosen.driverId, chosen.priceCents);
+  await closeWaits(c.env, customerId);
   return c.json(await orderView(c.env, o, c.get('actor')), 201);
+});
+
+/** No driver nearby: wait for one (nothing is paid). The app polls GET until a driver is free, then books as usual. */
+svc.post('/rides/waits', async (c) => {
+  const b = await body(c, rideWaitRequest);
+  return c.json(await startWait(c.env, me(c), b), 201);
+});
+svc.get('/rides/waits/:id', async (c) => c.json(await checkWait(c.env, await getWait(c.env, c.req.param('id'), me(c))), 200, { 'cache-control': 'no-store' }));
+svc.delete('/rides/waits/:id', async (c) => {
+  await cancelWait(c.env, await getWait(c.env, c.req.param('id'), me(c)));
+  return c.json({ ok: true });
+});
+
+/** Saved places (Home, Work, …) and shared landmarks, for the pickup and drop-off pickers. */
+svc.get('/places', async (c) => c.json(await listPlaces(c.env, me(c))));
+svc.post('/places', async (c) => c.json({ id: await savePlace(c.env, me(c), await body(c, placeRequest)) }, 201));
+svc.delete('/places/:id', async (c) => {
+  await deletePlace(c.env, me(c), c.req.param('id'));
+  return c.json({ ok: true });
 });
 
 svc.get('/rides', async (c) => {

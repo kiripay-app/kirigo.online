@@ -23,7 +23,7 @@ async function hasKiriGoSounds(): Promise<boolean> {
 }
 
 /** Ask for alert permission, create the sound channels, and register this phone with KiriGo. */
-export async function setupPush(call: Call, onTap: (data: Record<string, string>) => void): Promise<'on' | 'off' | 'web'> {
+export async function setupPush(call: Call, onTap: (data: Record<string, string>) => void, onReceive: (data: Record<string, string>) => void = onTap): Promise<'on' | 'off' | 'web'> {
   if (!isApp) return 'web';
   try {
     let p = await PushNotifications.checkPermissions();
@@ -46,7 +46,8 @@ export async function setupPush(call: Call, onTap: (data: Record<string, string>
     await PushNotifications.addListener('registration', (t) => { void call('/api/driver/push-token', { body: { token: t.value, platform: 'android', sounds } }).catch(() => {}); });
     await PushNotifications.addListener('registrationError', (e) => console.warn('push registration', e));
     await PushNotifications.addListener('pushNotificationActionPerformed', (a) => onTap((a.notification.data ?? {}) as Record<string, string>));
-    await PushNotifications.addListener('pushNotificationReceived', (n) => onTap((n.data ?? {}) as Record<string, string>));
+    // the app is open: Android shows no notification (see capacitor.config.json), the app rings with KiriGo's sound
+    await PushNotifications.addListener('pushNotificationReceived', (n) => onReceive((n.data ?? {}) as Record<string, string>));
     await PushNotifications.register();
     return 'on';
   } catch (e) { console.warn('push', e); return 'off'; }

@@ -19,7 +19,10 @@ function kpCookie(sub) {
 const sql = (q) => JSON.parse(execSync(`npx wrangler d1 execute kiripay --local --json --command "${q.replace(/"/g, '\\"')}"`, { cwd: KP_DIR, stdio: ['ignore', 'pipe', 'ignore'] }).toString())[0].results;
 const balance = (acc) => sql(`SELECT balance FROM accounts WHERE id='${acc}'`)[0].balance;
 async function req(url, { method = 'GET', body, headers = {}, raw, redirect = 'follow' } = {}) {
-  const res = await fetch(url, { method, redirect, headers: { ...(body ? { 'content-type': 'application/json' } : {}), ...headers }, body: raw ?? (body ? JSON.stringify(body) : undefined) });
+  const go = () => fetch(url, { method, redirect, headers: { ...(body ? { 'content-type': 'application/json' } : {}), ...headers }, body: raw ?? (body ? JSON.stringify(body) : undefined) });
+  // the local server drops idle keep-alive connections while the test waits on a database read: the request never
+  // reached it, so sending it once more is safe
+  const res = await go().catch((e) => (e?.cause?.code === 'UND_ERR_SOCKET' ? go() : Promise.reject(e)));
   if (redirect === 'manual') return res;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`${method} ${url} → ${res.status} ${JSON.stringify(data)}`);
@@ -52,13 +55,13 @@ async function main() {
   const drv = (p, o = {}) => req(`${GO}/api/driver${p}`, { ...o, headers: { ...(o.headers ?? {}), authorization: `Bearer ${dt}` } });
   const pic = (f, p) => f(p, { method: 'POST', raw: jpeg, headers: { 'content-type': 'image/jpeg' } });
   const v = (await pic(su, '/photos?kind=vehicle')).photoId, l = (await pic(su, '/photos?kind=licence')).photoId;
-  const ap = await su('/apply', { method: 'POST', body: { firstName: 'Bwebwe', vehicle: { type: 'car', plate: `C ${run.slice(-3)}`, photoId: v }, licencePhotoId: l, rateCard: { baseCents: 200, perKmCents: 100, minimumCents: 300, nightCents: 0, bulkyCents: 0 }, acceptTerms: true } });
+  const ap = await su('/apply', { method: 'POST', body: { firstName: 'Bwebwe', vehicle: { type: 'car', plate: `C ${run.slice(-3)}`, photoId: v }, licencePhotoId: l, rateCard: { baseCents: 200, perKmCents: 60, minimumCents: 350, nightCents: 0, bulkyCents: 0 }, acceptTerms: true } });
   dt = ap.token;
   await admin(`/drivers/${ap.driverId}/approve`, { method: 'POST', body: { licenceSeen: true, licenceMatchesKyc: true, licenceExpiry: '2031-01-01' } });
   const rw = (await pic(drv, '/photos?kind=vehicle')).photoId;
   const noFace = await admin(`/drivers/${ap.driverId}/rides/approve`, { method: 'POST', body: { roadworthyChecked: true, override: true } }).then(() => false, (e) => String(e).includes('FACE_PHOTO_NEEDED'));
   await admin(`/drivers/${ap.driverId}/face-photo`, { method: 'POST', raw: jpeg, headers: { 'content-type': 'image/jpeg' } });
-  await drv('/rides/apply', { method: 'POST', body: { seats: 4, roadworthyPhotoId: rw, rateCard: { baseCents: 300, perKmCents: 150, minimumCents: 500, nightCents: 0, waitPerMinCents: 50, cancelCents: 300 } } });
+  await drv('/rides/apply', { method: 'POST', body: { seats: 4, roadworthyPhotoId: rw, rateCard: { baseCents: 200, perKmCents: 50, minimumCents: 300, nightCents: 0, waitPerMinCents: 50, cancelCents: 300 } } });
   await admin(`/drivers/${ap.driverId}/rides/approve`, { method: 'POST', body: { roadworthyChecked: true, override: true, note: 'test' } });
   await drv('/services', { method: 'PUT', body: { deliveries: false, rides: true } });
   ok(noFace, 'rides need a face photo cut from the licence first');

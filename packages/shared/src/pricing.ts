@@ -1,4 +1,4 @@
-import type { Cents, RateCard, RideRateCard, Settings, Size } from './types';
+import type { Cents, RateCard, RateCore, RateKind, RideRateCard, Settings, Size } from './types';
 
 export interface PriceOptions {
   night: boolean;
@@ -61,4 +61,48 @@ export function priceRide(rc: RideRateCard, distanceM: number, night: boolean, c
 export function waitingCharge(arrivedAtMs: number, boardedAtMs: number, freeMin: number, perMinCents: Cents, capCents: Cents): Cents {
   const mins = Math.floor(Math.max(0, boardedAtMs - arrivedAtMs) / 60_000) - freeMin;
   return Math.max(0, Math.min(capCents, mins * perMinCents));
+}
+
+// ---------------------------------------------------------------- guided prices
+
+/** Which recommended card applies: motorbikes have their own delivery rate, every other vehicle uses the car rate. */
+export function rateKindFor(service: 'delivery' | 'ride', vehicleType: string | null | undefined): RateKind {
+  if (service === 'ride') return 'ride_car';
+  return vehicleType === 'motorbike' ? 'delivery_motorbike' : 'delivery_car';
+}
+
+export interface RateLimits { lowest: RateCore; highest: RateCore }
+
+/** The allowed range for each number: belowPct under to abovePct over the recommended value, rounded to 10 cents. */
+export function rateLimits(rec: RateCore, band: Settings['rate_band']): RateLimits {
+  const lo = (v: number) => Math.floor((v * (100 - band.belowPct)) / 1000) * 10;
+  const hi = (v: number) => Math.ceil((v * (100 + band.abovePct)) / 1000) * 10;
+  return {
+    lowest: { baseCents: lo(rec.baseCents), perKmCents: lo(rec.perKmCents), minimumCents: lo(rec.minimumCents) },
+    highest: { baseCents: hi(rec.baseCents), perKmCents: hi(rec.perKmCents), minimumCents: hi(rec.minimumCents) },
+  };
+}
+
+const RATE_NAMES: Record<keyof RateCore, string> = { baseCents: 'Starting price', perKmCents: 'Price per km', minimumCents: 'Minimum charge' };
+const dollars = (c: number) => `$${(c / 100).toFixed(2)}`;
+
+/** Plain-words problems with a driver's base / per km / minimum against the allowed range. Empty = fine. */
+export function checkRateBand(rc: RateCore, rec: RateCore, band: Settings['rate_band']): string[] {
+  const { lowest, highest } = rateLimits(rec, band);
+  const errs: string[] = [];
+  for (const k of Object.keys(RATE_NAMES) as (keyof RateCore)[]) {
+    if (rc[k] < lowest[k]) errs.push(`${RATE_NAMES[k]} can't be below ${dollars(lowest[k])}`);
+    if (rc[k] > highest[k]) errs.push(`${RATE_NAMES[k]} can't be above ${dollars(highest[k])}`);
+  }
+  return errs;
+}
+
+/** The recommended price for a trip, to compare drivers against. */
+export function recommendedPrice(rec: RateCore, distanceM: number): Cents {
+  return Math.max(rec.minimumCents, rec.baseCents + Math.round(rec.perKmCents * (distanceM / 1000)));
+}
+
+/** "Fair price": at or below the recommended price, or no more than pct above it. Night/bulky extras are left out of both. */
+export function isFairPrice(priceCents: Cents, recommendedCents: Cents, pct: number): boolean {
+  return priceCents <= Math.round(recommendedCents * (1 + pct / 100));
 }

@@ -1,5 +1,5 @@
 import {
-  displayRating, haversine, inKiWindow, positionOnRoad, priceRide, roadDistance, waitingCharge, type LatLng, type Settings,
+  displayRating, haversine, inKiWindow, isFairPrice, recommendedPrice, positionOnRoad, priceRide, roadDistance, waitingCharge, type LatLng, type Settings,
 } from '@kirigo/shared';
 import type { Actor, Env } from '../env';
 import { feeOkSql } from './fees';
@@ -30,7 +30,7 @@ export async function priceRideDrivers(env: Env, s: Settings, pickup: LatLng, di
   const qs = ids.map((_, i) => `?${i + 2}`).join(',');
   const { results } = await env.DB.prepare(`
     SELECT d.id, d.driver_code, d.first_name, d.rating_avg, d.rating_count, d.deliveries, d.ride_seats,
-           v.type AS v_type, v.plate, v.photo_id,
+           v.type AS v_type, v.plate, v.photo_id, v.colour,
            r.base_cents, r.per_km_cents, r.minimum_cents, r.night_cents, r.wait_per_min_cents, r.cancel_cents,
            (SELECT COUNT(*) FROM orders o WHERE o.driver_id=d.id AND o.status IN ('DRIVER_ASSIGNED','AT_SHOP','PICKED_UP','ARRIVED')) AS busy
     FROM drivers d JOIN ride_rate_cards r ON r.driver_id=d.id
@@ -44,7 +44,11 @@ export async function priceRideDrivers(env: Env, s: Settings, pickup: LatLng, di
     if (d.busy > 0 || (d.ride_seats ?? 0) < seats) continue;
     const pos = byId.get(d.id)!;
     const toPickup = Math.round(haversine(pos, pickup));
+    const card = { baseCents: d.base_cents, perKmCents: d.per_km_cents, minimumCents: d.minimum_cents, nightCents: d.night_cents, waitPerMinCents: d.wait_per_min_cents, cancelCents: d.cancel_cents };
+    const rec = recommendedPrice(s.recommended_rates.ride_car, distanceM);
     out.push({
+      fairPrice: isFairPrice(priceRide(card, distanceM, false, s), rec, s.fair_price_pct),
+      colour: d.colour || undefined,
       driverId: d.id, driverCode: d.driver_code, firstName: d.first_name, photoId: d.photo_id,
       vehicle: { type: d.v_type, plate: d.plate }, verified: true, seats: d.ride_seats,
       rating: displayRating(d.rating_avg, d.rating_count), deliveries: d.deliveries,

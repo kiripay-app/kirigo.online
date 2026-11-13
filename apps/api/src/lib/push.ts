@@ -47,6 +47,8 @@ export function alertFor(msg: any): Alert | null {
     case 'send_won': return { title: 'You got the parcel job', body: 'The sender chose your offer. Open KiriGo Driver for the pickup.', channel: 'jobs', data: { type: 'send_won', orderId: String(msg.orderId ?? '') }, ttlS: 3600 };
     case 'send_job': return { title: 'New parcel to deliver', body: 'Someone is asking for prices. Open Parcels to make an offer.', channel: 'jobs', data: { type: 'send_job', jobId: String(msg.jobId ?? '') }, ttlS: 1800 };
     case 'ride_cancelled': return { title: 'Ride cancelled', body: msg.ridesPaused ? 'The rider cancelled at the photo check. Your rides are paused until KiriGo checks.' : 'The rider cancelled at the photo check.', channel: 'jobs', data: { type: 'ride_cancelled', orderId: String(msg.orderId ?? '') }, ttlS: 3600 };
+    case 'message': return { title: 'Message from your customer', body: String(msg.body ?? '').slice(0, 120), channel: 'jobs', data: { type: 'message', orderId: String(msg.orderId ?? '') }, ttlS: 600 };
+    case 'rider_waiting': return { title: 'A rider near you is waiting', body: msg.online ? 'Stay online: they can book you now.' : 'Go online in KiriGo Driver to take the ride.', channel: 'offers', data: { type: 'rider_waiting' }, ttlS: 600 };
     default: return null;
   }
 }

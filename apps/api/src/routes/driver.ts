@@ -1,9 +1,12 @@
+import { enforceBand, rateGuide } from '../lib/rates';
 import { adultsOnly, driverApplyRequest, sendBidRequest, gpsPoint, handoffRequest, rateCardSchema, rateRequest, rideApplyRequest, rideRateCardSchema, validateRateCard } from '@kirigo/shared';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Actor, AppEnv, Env } from '../env';
 import { requireDriver, requireMember, signSession, type SessionClaims } from '../lib/auth';
 import { checkHandoff, trackTicket } from '../lib/handoff';
+import { notify } from '../lib/notify';
+import { driverCameOnline } from '../lib/waits';
 import { nextDriver, pushToDriver } from '../lib/matching';
 import { eventStmt, getOrder, notDelivered, payDriver, transition, type OrderRow } from '../lib/orders';
 import { claimPhoto, savePhoto, type PhotoKind } from '../lib/photos';
@@ -41,6 +44,7 @@ member.post('/apply', async (c) => {
   const b = await body(c, driverApplyRequest);
   const errs = validateRateCard(b.rateCard);
   if (errs.length) throw new ApiError('RATE_CARD_INVALID', 422, { errs });
+  enforceBand(st, 'delivery', b.vehicle.type, b.rateCard);
   const exists = await c.env.DB.prepare('SELECT id FROM drivers WHERE kiripay_user_id=?').bind(s.sub).first();
   if (exists) throw new ApiError('ALREADY_APPLIED', 409);
   const tmp: Actor = { type: 'driver', id: `u:${s.sub}`, userId: s.sub };
@@ -57,8 +61,8 @@ member.post('/apply', async (c) => {
   await c.env.DB.batch([
     c.env.DB.prepare('INSERT INTO drivers (id, kiripay_user_id, driver_code, first_name, licence_photo_id, free_until, fee_anchor_day) VALUES (?,?,?,?,?,?,?)')
       .bind(id, s.sub, code, b.firstName, b.licencePhotoId ?? null, freeUntil, day),
-    c.env.DB.prepare('INSERT INTO vehicles (id, driver_id, type, plate, photo_id, can_bulky) VALUES (?,?,?,?,?,?)')
-      .bind(newId('veh'), id, b.vehicle.type, b.vehicle.plate, b.vehicle.photoId, b.vehicle.canBulky ? 1 : 0),
+    c.env.DB.prepare('INSERT INTO vehicles (id, driver_id, type, plate, photo_id, can_bulky, colour) VALUES (?,?,?,?,?,?,?)')
+      .bind(newId('veh'), id, b.vehicle.type, b.vehicle.plate, b.vehicle.photoId, b.vehicle.canBulky ? 1 : 0, b.vehicle.colour),
     c.env.DB.prepare('INSERT INTO rate_cards (driver_id, base_cents, per_km_cents, minimum_cents, night_cents, bulky_cents) VALUES (?,?,?,?,?,?)')
       .bind(id, b.rateCard.baseCents, b.rateCard.perKmCents, b.rateCard.minimumCents, b.rateCard.nightCents, b.rateCard.bulkyCents),
     c.env.DB.prepare('UPDATE photos SET taken_by=? WHERE taken_by=?').bind(id, `u:${s.sub}`),
@@ -66,6 +70,9 @@ member.post('/apply', async (c) => {
   // a fresh session that knows the driver id
   return c.json({ driverId: id, driverCode: code, status: 'pending', token: await signSession(c.env, { ...s, drv: id }) }, 201);
 });
+
+/** Recommended prices and the allowed range, so the sign-up form starts filled in. */
+member.get('/rates', async (c) => c.json(rateGuide(await loadSettings(c.env.DB))));
 
 driver.route('/signup', member);
 
@@ -84,7 +91,7 @@ async function myJob(c: any, id: string): Promise<OrderRow> {
 d.get('/me', async (c) => {
   const id = meId(c);
   const row = await c.env.DB.prepare('SELECT * FROM drivers WHERE id=?').bind(id).first<any>();
-  const v = await c.env.DB.prepare('SELECT type, plate, can_bulky FROM vehicles WHERE driver_id=? AND active=1').bind(id).first();
+  const v = await c.env.DB.prepare('SELECT type, plate, can_bulky, colour FROM vehicles WHERE driver_id=? AND active=1').bind(id).first();
   const rc = await c.env.DB.prepare('SELECT base_cents, per_km_cents, minimum_cents, night_cents, bulky_cents FROM rate_cards WHERE driver_id=?').bind(id).first();
   const shift = await c.env.DB.prepare('SELECT id, online_at FROM shifts WHERE driver_id=? AND offline_at IS NULL').bind(id).first();
   return c.json({
@@ -96,8 +103,12 @@ d.get('/me', async (c) => {
   });
 });
 
+d.get('/rates', async (c) => c.json(rateGuide(await loadSettings(c.env.DB))));
+
 d.put('/rate-card', async (c) => {
   const rc = await body(c, rateCardSchema);
+  const veh = await c.env.DB.prepare('SELECT type FROM vehicles WHERE driver_id=? AND active=1').bind(meId(c)).first<{ type: string }>();
+  enforceBand(await loadSettings(c.env.DB), 'delivery', veh?.type, rc);
   const online = await c.env.DB.prepare('SELECT 1 FROM shifts WHERE driver_id=? AND offline_at IS NULL').bind(meId(c)).first();
   if (online) throw new ApiError('GO_OFFLINE_FIRST', 409);
   await c.env.DB.prepare('UPDATE rate_cards SET base_cents=?, per_km_cents=?, minimum_cents=?, night_cents=?, bulky_cents=?, updated_at=? WHERE driver_id=?')
@@ -127,7 +138,9 @@ d.post('/online', async (c) => {
     c.env.DB.prepare('INSERT INTO shifts (id, driver_id, selfie_photo_id, online_at) VALUES (?,?,?,?)').bind(newId('sh'), meId(c), b.selfiePhotoId, nowIso()),
   ]);
   await presence(c.env, 'online', { driverId: meId(c), lat: b.lat, lng: b.lng });
-  return c.json({ online: true, ticket: await trackTicket(c.env, 'driver', meId(c)) });
+  // riders who were waiting nearby: tell this driver to stay online (their apps pick the driver up on the next check)
+  const waiting = await driverCameOnline(c.env, meId(c), { lat: b.lat, lng: b.lng }).catch(() => 0);
+  return c.json({ online: true, ticket: await trackTicket(c.env, 'driver', meId(c)), ridersWaiting: waiting });
 });
 
 d.post('/offline', async (c) => {
@@ -281,6 +294,33 @@ d.post('/jobs/:id/status', async (c) => {
   return c.json(await orderView(c.env, await transition(c.env, o, 'ARRIVED', c.get('actor'), { at }), c.get('actor')));
 });
 
+/**
+ * "I'm here": the driver is outside. Marks them arrived (at the pickup for rides and parcels, at the drop-off for
+ * deliveries), and rings the rider/customer with the car's colour and plate. Can be tapped again after a minute.
+ */
+d.post('/jobs/:id/here', async (c) => {
+  let o = await myJob(c, c.req.param('id'));
+  const b = await body(c, z.object({ lat: z.number(), lng: z.number() }));
+  const at = { lat: b.lat, lng: b.lng };
+  const pickupStage = ['DRIVER_ASSIGNED', 'AT_SHOP'].includes(o.status);
+  const dropStage = ['PICKED_UP', 'ARRIVED'].includes(o.status);
+  // rides and parcels meet a person at the pickup; shop deliveries collect from the shop counter, so only the drop-off rings
+  if (!(pickupStage && (o.service === 'ride' || isSend(o))) && !(dropStage && o.service !== 'ride')) throw new ApiError('NOT_AT_A_MEETING_POINT', 409);
+  if (o.here_at && Date.now() - Date.parse(o.here_at) < 60_000) throw new ApiError('JUST_RANG', 429);
+  if (o.status === 'DRIVER_ASSIGNED') o = await transition(c.env, o, 'AT_SHOP', c.get('actor'), { at, set: o.service === 'ride' ? { at_pickup_at: nowIso() } : {} });
+  else if (o.status === 'PICKED_UP') o = await transition(c.env, o, 'ARRIVED', c.get('actor'), { at });
+  const v = await c.env.DB.prepare('SELECT type, plate, colour FROM vehicles WHERE driver_id=? AND active=1').bind(meId(c)).first<any>();
+  const what = [v?.colour, v?.type].filter(Boolean).join(' ') + (v?.plate ? `, plate ${v.plate}` : '');
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE orders SET here_at=? WHERE id=?').bind(nowIso(), o.id),
+    c.env.DB.prepare('INSERT INTO messages (order_id, from_type, from_id, body) VALUES (?,?,?,?)').bind(o.id, 'driver', meId(c), `I'm here${what ? ` (${what})` : ''}`),
+    eventStmt(c.env.DB, o.id, c.get('actor'), 'driver:here', { lat: b.lat, lng: b.lng }),
+  ]);
+  const fresh = await getOrder(c.env.DB, o.id);
+  await notify(c.env, fresh, 'driver:here');
+  return c.json(await orderView(c.env, fresh, c.get('actor')));
+});
+
 /** Driver gives up a job before pickup: it goes back to the customer's list. Counts against their standing. */
 d.post('/jobs/:id/release', async (c) => {
   const o = await myJob(c, c.req.param('id'));
@@ -430,9 +470,11 @@ d.post('/rides/apply', async (c) => {
   const b = await body(c, rideApplyRequest);
   const v = await c.env.DB.prepare('SELECT type FROM vehicles WHERE driver_id=? AND active=1').bind(meId(c)).first<{ type: string }>();
   if (!v || !['car', 'van'].includes(v.type)) throw new ApiError('RIDES_NEED_A_CAR', 422);
-  await claimPhoto(c.env, b.roadworthyPhotoId, 'vehicle', null, c.get('actor'));
   const rc = b.rateCard;
+  enforceBand(await loadSettings(c.env.DB), 'ride', v.type, rc);
+  await claimPhoto(c.env, b.roadworthyPhotoId, 'vehicle', null, c.get('actor'));
   await c.env.DB.batch([
+    ...(b.colour ? [c.env.DB.prepare('UPDATE vehicles SET colour=? WHERE driver_id=? AND active=1').bind(b.colour, meId(c))] : []),
     c.env.DB.prepare("UPDATE drivers SET ride_status=CASE WHEN ride_status='approved' THEN 'approved' ELSE 'pending' END, ride_seats=?, roadworthy_photo_id=? WHERE id=?").bind(b.seats, b.roadworthyPhotoId, meId(c)),
     c.env.DB.prepare(`INSERT INTO ride_rate_cards (driver_id, base_cents, per_km_cents, minimum_cents, night_cents, wait_per_min_cents, cancel_cents) VALUES (?,?,?,?,?,?,?)
       ON CONFLICT(driver_id) DO UPDATE SET base_cents=excluded.base_cents, per_km_cents=excluded.per_km_cents, minimum_cents=excluded.minimum_cents,
@@ -444,6 +486,7 @@ d.post('/rides/apply', async (c) => {
 
 d.put('/rides/rate-card', async (c) => {
   const rc = await body(c, rideRateCardSchema);
+  enforceBand(await loadSettings(c.env.DB), 'ride', 'car', rc);
   const online = await c.env.DB.prepare('SELECT 1 FROM shifts WHERE driver_id=? AND offline_at IS NULL').bind(meId(c)).first();
   if (online) throw new ApiError('GO_OFFLINE_FIRST', 409);
   const r = await c.env.DB.prepare('UPDATE ride_rate_cards SET base_cents=?, per_km_cents=?, minimum_cents=?, night_cents=?, wait_per_min_cents=?, cancel_cents=?, updated_at=? WHERE driver_id=?')

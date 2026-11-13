@@ -18,6 +18,7 @@ export interface OrderRow {
   service: 'delivery' | 'ride'; seats: number; at_pickup_at: string | null; waiting_cents: number; eta_s: number | null;
   emergency_at: string | null; drop_note: string;
   send_job_id: string | null; deliver_by: string | null; return_trip: number;
+  pickup_side: "lagoon" | "ocean" | null; drop_side: "lagoon" | "ocean" | null; here_at: string | null;
 }
 
 export async function getOrder(db: D1Database, id: string): Promise<OrderRow> {

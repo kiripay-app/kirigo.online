@@ -1,5 +1,5 @@
 import {
-  displayRating, haversine, inKiWindow, priceDelivery, roadDistance, type LatLng, type Road, type Settings, type Size,
+  displayRating, haversine, inKiWindow, isFairPrice, priceDelivery, rateKindFor, recommendedPrice, roadDistance, type LatLng, type Road, type Settings, type Size,
 } from '@kirigo/shared';
 import type { Env } from '../env';
 import { feeOkSql } from './fees';
@@ -43,6 +43,8 @@ export interface QuoteOption {
   driverId: string; driverCode: string; firstName: string; photoId: string | null;
   vehicle: { type: string; plate: string }; verified: boolean;
   rating: string; deliveries: number; priceCents: number; etaMin: number; distanceToShopM: number;
+  /** within the "Fair price" band of KiriGo's recommended price for this trip */
+  fairPrice?: boolean;
 }
 
 
@@ -70,7 +72,12 @@ export async function priceDrivers(env: Env, s: Settings, from: LatLng, distance
     if (size === 'bulky' && !d.can_bulky) continue;
     const pos = byId.get(d.id)!;
     const toShop = Math.round(haversine(pos, from));
+    const card = { baseCents: d.base_cents, perKmCents: d.per_km_cents, minimumCents: d.minimum_cents, nightCents: d.night_cents, bulkyCents: d.bulky_cents };
+    // compared without night/bulky extras, which the recommended price doesn't include either
+    const plain = priceDelivery(card, distanceM, { night: false, size: 'small' }, s);
+    const rec = recommendedPrice(s.recommended_rates[rateKindFor('delivery', d.v_type)], distanceM);
     out.push({
+      fairPrice: isFairPrice(plain, rec, s.fair_price_pct),
       driverId: d.id, driverCode: d.driver_code, firstName: d.first_name, photoId: d.photo_id,
       vehicle: { type: d.v_type, plate: d.plate }, verified: true,
       rating: displayRating(d.rating_avg, d.rating_count), deliveries: d.deliveries,

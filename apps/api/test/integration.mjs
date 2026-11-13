@@ -23,7 +23,10 @@ const sql = (q) => JSON.parse(execSync(`npx wrangler d1 execute kiripay --local 
 const balance = (acc) => sql(`SELECT balance FROM accounts WHERE id='${acc}'`)[0].balance;
 
 async function req(url, { method = 'GET', body, headers = {}, raw, redirect = 'follow' } = {}) {
-  const res = await fetch(url, { method, redirect, headers: { ...(body ? { 'content-type': 'application/json' } : {}), ...headers }, body: raw ?? (body ? JSON.stringify(body) : undefined) });
+  const go = () => fetch(url, { method, redirect, headers: { ...(body ? { 'content-type': 'application/json' } : {}), ...headers }, body: raw ?? (body ? JSON.stringify(body) : undefined) });
+  // the local server drops idle keep-alive connections while the test waits on a database read: the request never
+  // reached it, so sending it once more is safe
+  const res = await go().catch((e) => (e?.cause?.code === 'UND_ERR_SOCKET' ? go() : Promise.reject(e)));
   if (redirect === 'manual') return res;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`${method} ${url} → ${res.status} ${JSON.stringify(data)}`);
@@ -61,7 +64,7 @@ async function main() {
   let driverId;
   try {
     const v = (await pic(signup, '/photos?kind=vehicle')).photoId;
-    const a = await signup('/apply', { method: 'POST', body: { firstName: 'Teeta', vehicle: { type: 'motorbike', plate: 'T 1', photoId: v }, rateCard: { baseCents: 200, perKmCents: 100, minimumCents: 300, nightCents: 0, bulkyCents: 0 }, acceptTerms: true } });
+    const a = await signup('/apply', { method: 'POST', body: { firstName: 'Teeta', vehicle: { type: 'motorbike', plate: 'T 1', photoId: v }, rateCard: { baseCents: 100, perKmCents: 40, minimumCents: 200, nightCents: 0, bulkyCents: 0 }, acceptTerms: true } });
     dt = a.token; driverId = a.driverId;
     await admin(`/drivers/${driverId}/approve`, { method: 'POST', body: { licenceSeen: true, licenceMatchesKyc: true, licenceExpiry: '2031-01-01' } });
   } catch (e) {

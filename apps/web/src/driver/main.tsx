@@ -6,10 +6,79 @@ import { CameraShot, QrScan } from './camera';
 // the map (Leaflet + map tiles) loads only when the "where am I seen" map is opened: a much smaller first download
 const WhereMap = lazy(() => import('./where').then((m) => ({ default: m.WhereMap })));
 import { appUpdate, isApp, openDownload, setupPush, startBackgroundLocation, stopBackgroundLocation, type PublicApp } from './native';
+import { ring, unlockSounds } from './sounds';
+
+unlockSounds();
 import { addPending, checkQrOffline, pending, refreshKey, syncPending, toDataUrl } from './offline';
 
 const call = client('driver', () => location.reload());
 type Pos = { lat: number; lng: number };
+
+// ------------------------------------------------------------------ guided prices, sides, chat
+
+type Core = { baseCents: number; perKmCents: number; minimumCents: number };
+type Guide = { rates: Record<'delivery_motorbike' | 'delivery_car' | 'ride_car', { recommended: Core; lowest: Core; highest: Core }>; band: { belowPct: number; abovePct: number } };
+const kindFor = (service: 'delivery' | 'ride', type: string) => (service === 'ride' ? 'ride_car' : type === 'motorbike' ? 'delivery_motorbike' : 'delivery_car') as keyof Guide['rates'];
+const dollars = (c: number) => (c / 100).toFixed(2);
+
+function useGuide(path = '/api/driver/rates') {
+  const [g, setG] = useState<Guide | null>(null);
+  useEffect(() => { call(path).then(setG).catch(() => {}); }, [path]);
+  return g;
+}
+
+/** Under each price box: KiriGo's recommended value and the allowed range; red when outside it. */
+function PriceHint({ g, kind, field, value }: { g: Guide | null; kind: keyof Guide['rates']; field: keyof Core; value: string }) {
+  if (!g) return null;
+  const r = g.rates[kind];
+  const c = Math.round(Number(value || 0) * 100);
+  const out = c < r.lowest[field] || c > r.highest[field];
+  return <p className="small" style={{ margin: '2px 0 6px', color: out ? '#fca5a5' : undefined }}>
+    Suggested ${dollars(r.recommended[field])} · allowed ${dollars(r.lowest[field])}–${dollars(r.highest[field])}
+  </p>;
+}
+
+function GuideNote({ g }: { g: Guide | null }) {
+  if (!g) return null;
+  return <p className="small">KiriGo suggests prices that most people on Tarawa can afford. You choose your own, from {g.band.belowPct}% below to {g.band.abovePct}% above the suggestion. Drivers close to it get a <b>Fair price</b> badge that customers see.</p>;
+}
+
+/** Lagoon side / ocean side of the road: how people on Tarawa say where to stop. */
+export function SideTag({ side }: { side?: string | null }) {
+  if (!side) return null;
+  return <span className="pill" style={{ marginLeft: 6, background: side === 'lagoon' ? '#0e4f5c' : '#1e3a8a' }}>{side === 'lagoon' ? 'Lagoon side' : 'Ocean side'}</span>;
+}
+
+const DRIVER_REPLIES = ['On my way', "I'm outside", "I can't find you, please call", 'Please come to the road'];
+
+/** Messages with the customer, newest first. Their one-tap replies to "I'm here" show up here. */
+function Chat({ orderId }: { orderId: string }) {
+  const [msgs, setMsgs] = useState<any[]>([]);
+  const [text, setText] = useState('');
+  const load = useCallback(() => call(`/api/driver/jobs/${orderId}/messages`).then(setMsgs).catch(() => {}), [orderId]);
+  useEffect(() => { void load(); const t = setInterval(load, 8000); return () => clearInterval(t); }, [load]);
+  const send = async (body: string) => { if (!body.trim()) return; try { await call(`/api/driver/jobs/${orderId}/messages`, { body: { body } }); setText(''); void load(); } catch { /* try again */ } };
+  const last = [...msgs].reverse().find((m) => m.from_type === 'customer');
+  return (
+    <div className="card">
+      <h3>Messages</h3>
+      {last && <div className="notice" style={{ marginBottom: 8 }}>Customer: <b>{last.body}</b></div>}
+      <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>{DRIVER_REPLIES.map((r) => <button key={r} className="secondary" style={{ flex: '0 0 auto' }} onClick={() => send(r)}>{r}</button>)}</div>
+      <div className="row" style={{ marginTop: 8 }}><input aria-label="Message to the customer" placeholder="Message" maxLength={300} value={text} onChange={(e) => setText(e.target.value)} /><button onClick={() => send(text)}>Send</button></div>
+      {msgs.slice(-6).reverse().map((m, i) => <p key={i} className="small" style={{ margin: '4px 0' }}><b>{m.from_type === 'driver' ? 'You' : 'Customer'}:</b> {m.body}</p>)}
+    </div>
+  );
+}
+
+/** "I'm here": marks you arrived and rings the customer with your car's colour and plate. */
+function HereButton({ orderId, onDone, again, label = "I'm here" }: { orderId: string; onDone: (o: any) => void; again?: boolean; label?: string }) {
+  const [err, setErr] = useState('');
+  const ring = async () => { setErr(''); try { onDone(await call(`/api/driver/jobs/${orderId}/here`, { body: here() })); } catch (e) { setErr(e instanceof ApiError && e.code === 'JUST_RANG' ? 'You just let them know. Try again in a minute.' : explain(e)); } };
+  return <>
+    <button className={again ? 'secondary block' : 'block'} style={again ? { marginTop: 8 } : undefined} onClick={ring}>{again ? 'Let them know again' : label}</button>
+    {err && <p className="small">{err}</p>}
+  </>;
+}
 
 // ------------------------------------------------------------------ location
 
@@ -128,7 +197,17 @@ function GetReady({ twoStep, idOk }: { twoStep: boolean; idOk: boolean }) {
 }
 
 function Apply({ onDone }: { onDone: (token: string) => void }) {
-  const [f, setF] = useState({ firstName: '', type: 'motorbike', plate: '', canBulky: false, base: '2.00', perKm: '1.00', minimum: '3.00', night: '0', bulky: '0', terms: false });
+  const [f, setF] = useState({ firstName: '', type: 'motorbike', plate: '', colour: '', canBulky: false, base: '', perKm: '', minimum: '', night: '0', bulky: '0', terms: false });
+  const g = useGuide('/api/driver/signup/rates');
+  const kind = kindFor('delivery', f.type);
+  const [touched, setTouched] = useState(false);
+  // start from KiriGo's suggestion for the vehicle, until the driver changes a price themselves
+  useEffect(() => {
+    if (!g || touched) return;
+    const r = g.rates[kind].recommended;
+    setF((x) => ({ ...x, base: dollars(r.baseCents), perKm: dollars(r.perKmCents), minimum: dollars(r.minimumCents) }));
+  }, [g, kind, touched]);
+  const price = (k: 'base' | 'perKm' | 'minimum') => (e: any) => { setTouched(true); setF({ ...f, [k]: e.target.value }); };
   const [vehicle, setVehicle] = useState<string | null>(null);
   const [licence, setLicence] = useState<string | null>(null);
   const [shoot, setShoot] = useState<'vehicle' | 'licence' | null>(null);
@@ -145,7 +224,7 @@ function Apply({ onDone }: { onDone: (token: string) => void }) {
     setBusy(true); setErr('');
     try {
       const r = await call('/api/driver/signup/apply', { body: {
-        firstName: f.firstName, vehicle: { type: f.type, plate: f.plate, canBulky: f.canBulky, photoId: vehicle }, licencePhotoId: licence ?? undefined,
+        firstName: f.firstName, vehicle: { type: f.type, plate: f.plate, colour: f.colour, canBulky: f.canBulky, photoId: vehicle }, licencePhotoId: licence ?? undefined,
         rateCard: { baseCents: cents(f.base), perKmCents: cents(f.perKm), minimumCents: cents(f.minimum), nightCents: cents(f.night), bulkyCents: cents(f.bulky) },
         acceptTerms: f.terms,
       } });
@@ -157,13 +236,14 @@ function Apply({ onDone }: { onDone: (token: string) => void }) {
     <div className="app">
       <Top />
       <h2>Drive with KiriGo</h2>
-      <p>Set your own prices and keep 100% of every delivery charge. The first 3 months are free.</p>
+      <p>Choose your own prices and keep 100% of every delivery charge. The first 3 months are free.</p>
       {err && <div className="error">{err}</div>}
       <div className="card">
         <label>First name (shown to customers)</label><input value={f.firstName} onChange={c('firstName')} />
         <label>Vehicle</label>
         <select value={f.type} onChange={c('type')}><option value="motorbike">Motorbike</option><option value="car">Car</option><option value="van">Van</option><option value="truck">Truck</option></select>
         <label>Plate number</label><input value={f.plate} onChange={c('plate')} />
+        <label>Colour (helps customers spot you)</label><input placeholder="e.g. White" maxLength={30} value={f.colour} onChange={c('colour')} />
         <div className="check"><input type="checkbox" checked={f.canBulky} onChange={c('canBulky')} />I can carry bulky items</div>
         <div className="row" style={{ marginTop: 8 }}>
           <button className="secondary" onClick={() => setShoot('vehicle')}>{vehicle ? '✓ Vehicle photo' : 'Vehicle photo'}</button>
@@ -173,9 +253,12 @@ function Apply({ onDone }: { onDone: (token: string) => void }) {
       </div>
       <div className="card">
         <h3>Your prices</h3>
-        <p className="small">Customers see your price for each trip: base fee + price per km, never less than your minimum.</p>
-        <div className="row"><div><label>Base fee $</label><input inputMode="decimal" value={f.base} onChange={c('base')} /></div><div><label>Per km $</label><input inputMode="decimal" value={f.perKm} onChange={c('perKm')} /></div></div>
-        <div className="row"><div><label>Minimum $</label><input inputMode="decimal" value={f.minimum} onChange={c('minimum')} /></div><div><label>Night extra $</label><input inputMode="decimal" value={f.night} onChange={c('night')} /></div></div>
+        <p className="small">Customers see your price for each trip: starting price + price per km, never less than your minimum.</p>
+        <GuideNote g={g} />
+        <label>Starting price $</label><input inputMode="decimal" value={f.base} onChange={price('base')} /><PriceHint g={g} kind={kind} field="baseCents" value={f.base} />
+        <label>Per km $</label><input inputMode="decimal" value={f.perKm} onChange={price('perKm')} /><PriceHint g={g} kind={kind} field="perKmCents" value={f.perKm} />
+        <label>Minimum $</label><input inputMode="decimal" value={f.minimum} onChange={price('minimum')} /><PriceHint g={g} kind={kind} field="minimumCents" value={f.minimum} />
+        <label>Night extra $</label><input inputMode="decimal" value={f.night} onChange={c('night')} />
         <label>Bulky item extra $</label><input inputMode="decimal" value={f.bulky} onChange={c('bulky')} />
       </div>
       <div className="check"><input type="checkbox" checked={f.terms} onChange={c('terms')} />I accept the KiriGo driver terms: I'm responsible for goods while I carry them, my location is tracked during jobs, and I take a photo at every handoff.</div>
@@ -198,10 +281,15 @@ function Home({ me, reload }: { me: any; reload: () => void }) {
   const [selfie, setSelfie] = useState(false);
   const [err, setErr] = useState('');
   const [queued, setQueued] = useState(pending().length);
+  const [waitingNote, setWaitingNote] = useState('');
 
+  const seenOffers = useRef<Set<string>>(new Set());
   const refresh = useCallback(async () => {
     try {
       const [o, j] = await Promise.all([call('/api/driver/offers'), call('/api/driver/jobs')]);
+      // a new offer (by socket, Firebase or polling) rings with KiriGo's offer sound
+      if (o.some((x: any) => !seenOffers.current.has(x.offerId))) ring('offer');
+      seenOffers.current = new Set(o.map((x: any) => x.offerId));
       setOffers(o); setJobs(j);
     } catch (e) { if (!(e instanceof ApiError && e.code === 'OFFLINE')) setErr(explain(e)); }
   }, []);
@@ -214,7 +302,14 @@ function Home({ me, reload }: { me: any; reload: () => void }) {
     if (me.online) {
       call('/api/driver/ws-ticket').then((r) => {
         ws = new WebSocket(`${location.origin.replace(/^http/, 'ws')}${r.ws}?ticket=${encodeURIComponent(r.ticket)}`);
-        ws.onmessage = () => void refresh();
+        ws.onmessage = (ev) => {
+          try {
+            const m = JSON.parse(String(ev.data));
+            if (m?.type === 'rider_waiting') { setWaitingNote('A rider near you is waiting. Stay online and they can book you.'); ring('offer'); }
+            else if (m?.type && m.type !== 'offer') ring('job');
+          } catch { /* not JSON */ }
+          void refresh();
+        };
       }).catch(() => {});
     }
     return () => { clearInterval(t); ws?.close(); };
@@ -222,7 +317,9 @@ function Home({ me, reload }: { me: any; reload: () => void }) {
 
   // Android app: phone alerts for offers, and location that keeps flowing in the background while online
   const [alerts, setAlerts] = useState<'on' | 'off' | 'web'>(isApp ? 'off' : 'web');
-  useEffect(() => { void setupPush(call, () => void refresh()).then(setAlerts); }, [refresh]);
+  // Firebase alert while the app is open: Android shows nothing itself, so play KiriGo's sound here (offers ring once
+  // the refreshed list shows them)
+  useEffect(() => { void setupPush(call, () => void refresh(), (d) => { if (d.type === 'rider_waiting') ring('offer'); else if (d.type && d.type !== 'offer') ring('job'); void refresh(); }).then(setAlerts); }, [refresh]);
   useEffect(() => {
     if (!isApp) return;
     if (me.online) void startBackgroundLocation((p) => { lastPos = p; watchers.forEach((w) => w(p)); });
@@ -275,6 +372,7 @@ function Home({ me, reload }: { me: any; reload: () => void }) {
           {!me.online
             ? <button className="block" disabled={me.fee?.due} onClick={() => setSelfie(true)}>Go online</button>
             : <button className="secondary block" disabled={jobs.length > 0} onClick={goOffline}>Go offline</button>}
+          {waitingNote && me.online && !jobs.length && <div className="notice">{waitingNote}</div>}
           <Visibility online={me.online} alerts={alerts} />
           {offers.map((o) => <Offer key={o.offerId} o={o} onDone={(job) => { void refresh(); if (job) setOpen(job); }} />)}
           {jobs.map((j) => (
@@ -362,14 +460,16 @@ function Job({ id, onClose }: { id: string; onClose: () => void }) {
       </div>
       <div className="card">
         <div className="between"><b>{isReturn ? `Drop at ${o.shop.name}` : 'Customer'}</b><a href={mapsLink(o.dropoff)} target="_blank" rel="noreferrer">Directions</a></div>
-        {o.dropoff.landmark && <p className="small">{o.dropoff.landmark}</p>}
+        {o.dropoff.landmark && <p className="small">{o.dropoff.landmark}<SideTag side={o.sides?.dropoff} /></p>}
+        {!o.dropoff.landmark && o.sides?.dropoff && <p className="small"><SideTag side={o.sides.dropoff} /></p>}
         <p className="small">You earn {money(o.deliveryCents)}</p>
       </div>
       {o.status === 'DRIVER_ASSIGNED' && <button className="block" onClick={() => step('at_pickup')}>I'm at the {isReturn ? 'customer' : 'shop'}</button>}
       {o.status === 'AT_SHOP' && (isReturn
         ? <button className="block" onClick={() => setMode('pickupCode')}>Collect the item (customer's code)</button>
         : <button className="block" onClick={() => step('picked_up')}>I have the package</button>)}
-      {o.status === 'PICKED_UP' && <button className="block" onClick={() => step('arrived')}>I've arrived</button>}
+      {o.status === 'PICKED_UP' && (isReturn ? <button className="block" onClick={() => step('arrived')}>I've arrived</button> : <HereButton orderId={o.id} onDone={setO} label="I'm here — let the customer know" />)}
+      {o.status === 'ARRIVED' && !isReturn && <HereButton orderId={o.id} onDone={setO} again />}
       {(o.status === 'ARRIVED' || o.status === 'PICKED_UP') && <button className="block" style={{ marginTop: 8 }} onClick={() => setMode('handoff')}>{isReturn ? 'Drop off at the shop' : 'Hand over'}</button>}
       {o.status === 'ARRIVED' && !isReturn && (
         <div className="row" style={{ marginTop: 8 }}>
@@ -377,6 +477,7 @@ function Job({ id, onClose }: { id: string; onClose: () => void }) {
           <button className="secondary" onClick={() => notDelivered('no_adult')}>No adult (after 10 pm)</button>
         </div>
       )}
+      {['DRIVER_ASSIGNED', 'AT_SHOP', 'PICKED_UP', 'ARRIVED'].includes(o.status) && !isReturn && <Chat orderId={o.id} />}
       {['DRIVER_ASSIGNED', 'AT_SHOP'].includes(o.status) && <button className="secondary block" style={{ marginTop: 16 }} onClick={giveBack}>Give job back</button>}
       {o.status === 'HANDED_OVER' && <Rate orderId={o.id} isReturn={isReturn} onDone={onClose} />}
     </div>
@@ -458,7 +559,7 @@ function SendJobs({ me }: { me: any }) {
 }
 
 function SendJobCard({ j, onChange }: { j: any; onChange: () => void }) {
-  const [price, setPrice] = useState(j.myBid ? (j.myBid.priceCents / 100).toFixed(2) : '');
+  const [price, setPrice] = useState(j.myBid ? (j.myBid.priceCents / 100).toFixed(2) : j.suggestedCents ? dollars(j.suggestedCents) : '');
   const [note, setNote] = useState(j.myBid?.note ?? '');
   const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
   const bid = async () => {
@@ -474,6 +575,7 @@ function SendJobCard({ j, onChange }: { j: any; onChange: () => void }) {
       {j.description && <p className="small">{j.description}</p>}
       <p className="small">{kmText(j.distanceM)} trip{j.toPickupM != null ? ` · pickup ${kmText(j.toPickupM)} from you` : ''}</p>
       <p className="small">Collect after {when(j.pickupAfter)} · deliver by <b>{when(j.deliverBy)}</b></p>
+      {j.suggestedCents ? <p className="small">KiriGo suggests {money(j.suggestedCents)} for this trip. Offers close to it show as a Fair price.</p> : null}
       {j.myBid && <p className="small">Your offer: <b>{money(j.myBid.priceCents)}</b>. You'll hear if the sender picks you.</p>}
       <div className="row">
         <input inputMode="decimal" aria-label="Your price in dollars" placeholder="Your price $" value={price} onChange={(e) => setPrice(e.target.value)} style={{ maxWidth: 130 }} />
@@ -488,7 +590,7 @@ function SendJobCard({ j, onChange }: { j: any; onChange: () => void }) {
   );
 }
 
-function SendJob({ o, err, mode, setMode, step, giveBack, notDelivered, load, onClose }: any) {
+function SendJob({ o, setO, err, mode, setMode, step, giveBack, notDelivered, load, onClose }: any) {
   const sd = o.send;
   const order = ['DRIVER_ASSIGNED', 'AT_SHOP', 'PICKED_UP', 'ARRIVED', 'ACCEPTED'];
   const at = order.indexOf(o.status === 'HANDED_OVER' ? 'ACCEPTED' : o.status);
@@ -502,19 +604,19 @@ function SendJob({ o, err, mode, setMode, step, giveBack, notDelivered, load, on
       {err && <div className="error">{err}</div>}
       <div className="card">
         <div className="between"><b>Collect from the sender</b><a href={mapsLink(o.shop.pickup)} target="_blank" rel="noreferrer">Directions</a></div>
-        {sd.pickupNote && <p className="small">{sd.pickupNote}</p>}
+        {(sd.pickupNote || o.sides?.pickup) && <p className="small">{sd.pickupNote}<SideTag side={o.sides?.pickup} /></p>}
         <p className="small">{ITEM[sd.item] ?? sd.item}{sd.description ? ` · ${sd.description}` : ''} · after {when(sd.pickupAfter)}</p>
       </div>
       <div className="card">
         <div className="between"><b>{sd.returning ? 'Back to the sender' : `Deliver to ${sd.recipient?.name ?? 'the recipient'}`}</b><a href={mapsLink(o.dropoff)} target="_blank" rel="noreferrer">Directions</a></div>
-        {o.dropoff.landmark && <p className="small">{o.dropoff.landmark}</p>}
+        {(o.dropoff.landmark || o.sides?.dropoff) && <p className="small">{o.dropoff.landmark}<SideTag side={o.sides?.dropoff} /></p>}
         {!sd.returning && sd.recipient?.phone && <p className="small"><a href={`tel:${sd.recipient.phone}`}>Call {sd.recipient.name}</a></p>}
         <p className="small">By {when(sd.deliverBy)} · you earn {money(o.deliveryCents)}</p>
         <p className="small">{sd.returning ? 'The sender shows you their code to get it back.' : 'The recipient shows you a 4-digit code or QR. Take the photo at the handoff.'}</p>
       </div>
-      {o.status === 'DRIVER_ASSIGNED' && <button className="block" onClick={() => step('at_pickup')}>I'm at the pickup</button>}
-      {o.status === 'AT_SHOP' && <button className="block" onClick={() => step('picked_up')}>I have the parcel</button>}
-      {o.status === 'PICKED_UP' && <button className="block" onClick={() => step('arrived')}>I've arrived</button>}
+      {o.status === 'DRIVER_ASSIGNED' && <HereButton orderId={o.id} onDone={setO} label="I'm here — let the sender know" />}
+      {o.status === 'AT_SHOP' && <><button className="block" onClick={() => step('picked_up')}>I have the parcel</button><HereButton orderId={o.id} onDone={setO} again /></>}
+      {o.status === 'PICKED_UP' && (sd.returning ? <button className="block" onClick={() => step('arrived')}>I've arrived</button> : <HereButton orderId={o.id} onDone={setO} label="I'm here — let them know" />)}
       {(o.status === 'ARRIVED' || o.status === 'PICKED_UP') && <button className="block" style={{ marginTop: 8 }} onClick={() => setMode('handoff')}>Hand over</button>}
       {o.status === 'ARRIVED' && (
         <div className="row" style={{ marginTop: 8 }}>
@@ -522,6 +624,7 @@ function SendJob({ o, err, mode, setMode, step, giveBack, notDelivered, load, on
           <button className="secondary" onClick={() => notDelivered('no_adult')}>No adult (after 10 pm)</button>
         </div>
       )}
+      {['DRIVER_ASSIGNED', 'AT_SHOP', 'PICKED_UP', 'ARRIVED'].includes(o.status) && <Chat orderId={o.id} />}
       {o.status === 'ARRIVED' && !sd.returning && <p className="small">If nobody can take it, you're paid for the trip and bring it back to the sender.</p>}
       {['DRIVER_ASSIGNED', 'AT_SHOP'].includes(o.status) && <button className="secondary block" style={{ marginTop: 16 }} onClick={giveBack}>Give job back</button>}
       {(o.status === 'ACCEPTED' || o.status === 'HANDED_OVER') && <RideRate orderId={o.id} onDone={onClose} parcel />}
@@ -567,20 +670,22 @@ function RideJob({ o, setO, onClose }: { o: any; setO: (o: any) => void; onClose
       {o.ride.sharing && active && <p className="small">The rider is sharing this trip with someone they know.</p>}
       <div className="card">
         <div className="between"><b>Pick up</b><a href={mapsLink(o.ride.pickup)} target="_blank" rel="noreferrer">Directions</a></div>
-        {o.ride.pickup.note && <p className="small">{o.ride.pickup.note}</p>}
+        {(o.ride.pickup.note || o.sides?.pickup) && <p className="small">{o.ride.pickup.note}<SideTag side={o.sides?.pickup} /></p>}
         <p className="small">{o.ride.seats} {o.ride.seats === 1 ? 'passenger' : 'passengers'}</p>
       </div>
       <div className="card">
         <div className="between"><b>Drop off</b><a href={mapsLink(o.dropoff)} target="_blank" rel="noreferrer">Directions</a></div>
-        {o.ride.dropNote && <p className="small">{o.ride.dropNote}</p>}
+        {(o.ride.dropNote || o.sides?.dropoff) && <p className="small">{o.ride.dropNote}<SideTag side={o.sides?.dropoff} /></p>}
         <p className="small">Fare {money(o.ride.fareCents)}{o.ride.waitingCents ? ` + waiting ${money(o.ride.waitingCents)}` : ''}</p>
       </div>
-      {o.status === 'DRIVER_ASSIGNED' && <button className="block" onClick={() => step('at_pickup')}>I'm at the pickup</button>}
+      {o.status === 'DRIVER_ASSIGNED' && <HereButton orderId={o.id} onDone={setO} label="I'm here — let the rider know" />}
       {o.status === 'AT_SHOP' && <>
         <button className="block" onClick={() => setBoarding(true)}>Rider is here — scan boarding code</button>
+        <HereButton orderId={o.id} onDone={setO} again />
         <button className="secondary block" style={{ marginTop: 8 }} onClick={() => act('no-show')}>Rider didn't come</button>
       </>}
       {(o.status === 'PICKED_UP' || o.status === 'ARRIVED') && <button className="block" onClick={() => act('end-ride')}>End ride at destination</button>}
+      {['DRIVER_ASSIGNED', 'AT_SHOP'].includes(o.status) && <Chat orderId={o.id} />}
       {['DRIVER_ASSIGNED', 'AT_SHOP'].includes(o.status) && <button className="secondary block" style={{ marginTop: 8 }} onClick={async () => { if (confirm('Give this ride back? It counts against your record.')) { try { await call(`/api/driver/jobs/${o.id}/release`, { method: 'POST' }); onClose(); } catch (e) { setErr(explain(e)); } } }}>Give ride back</button>}
       {active && <button className="danger block" style={{ marginTop: 16 }} onClick={emergency}>Emergency</button>}
       {o.status === 'ACCEPTED' && <RideRate orderId={o.id} onDone={onClose} />}
@@ -737,15 +842,21 @@ function RideApply({ onDone }: { onDone: () => void }) {
   const [open, setOpen] = useState(false);
   const [shot, setShot] = useState(false);
   const [photo, setPhoto] = useState<string | null>(null);
-  const [f, setF] = useState({ seats: '4', base: '3.00', perKm: '1.50', minimum: '5.00', night: '0', wait: '0.50', cancel: '3.00' });
+  const [f, setF] = useState({ seats: '4', colour: '', base: '', perKm: '', minimum: '', night: '0', wait: '0.20', cancel: '2.00' });
   const [err, setErr] = useState('');
+  const g = useGuide();
+  useEffect(() => {
+    if (!g) return;
+    const r = g.rates.ride_car.recommended;
+    setF((x) => (x.base ? x : { ...x, base: dollars(r.baseCents), perKm: dollars(r.perKmCents), minimum: dollars(r.minimumCents) }));
+  }, [g]);
   const c = (k: keyof typeof f) => (e: any) => setF({ ...f, [k]: e.target.value });
   const cents = (v: string) => Math.round(Number(v || 0) * 100);
   if (!open) return <button className="secondary block" style={{ marginTop: 8 }} onClick={() => setOpen(true)}>Apply to carry passengers</button>;
   if (shot) return <div style={{ marginTop: 8 }}><p className="small">Photo of your car showing the plate, tyres and condition.</p><CameraShot label="Take photo" onShot={async (b) => { const r = await call('/api/driver/photos?kind=vehicle', { raw: b }); setPhoto(r.photoId); setShot(false); }} /></div>;
   const submit = async () => {
     try {
-      await call('/api/driver/rides/apply', { body: { seats: Number(f.seats), roadworthyPhotoId: photo, rateCard: { baseCents: cents(f.base), perKmCents: cents(f.perKm), minimumCents: cents(f.minimum), nightCents: cents(f.night), waitPerMinCents: cents(f.wait), cancelCents: cents(f.cancel) } } });
+      await call('/api/driver/rides/apply', { body: { seats: Number(f.seats), colour: f.colour, roadworthyPhotoId: photo, rateCard: { baseCents: cents(f.base), perKmCents: cents(f.perKm), minimumCents: cents(f.minimum), nightCents: cents(f.night), waitPerMinCents: cents(f.wait), cancelCents: cents(f.cancel) } } });
       onDone();
     } catch (e) { setErr(explain(e)); }
   };
@@ -753,12 +864,45 @@ function RideApply({ onDone }: { onDone: () => void }) {
     <div style={{ marginTop: 8 }}>
       {err && <div className="error">{err}</div>}
       <label>Passenger seats</label><input inputMode="numeric" value={f.seats} onChange={c('seats')} />
+      <label>Car colour (riders look for it)</label><input placeholder="e.g. White" maxLength={30} value={f.colour} onChange={c('colour')} />
       <button className="secondary block" style={{ marginTop: 8 }} onClick={() => setShot(true)}>{photo ? '✓ Car photo' : 'Car photo'}</button>
-      <div className="row"><div><label>Base $</label><input value={f.base} onChange={c('base')} /></div><div><label>Per km $</label><input value={f.perKm} onChange={c('perKm')} /></div></div>
-      <div className="row"><div><label>Minimum fare $</label><input value={f.minimum} onChange={c('minimum')} /></div><div><label>Night extra $</label><input value={f.night} onChange={c('night')} /></div></div>
+      <GuideNote g={g} />
+      <label>Starting price $</label><input inputMode="decimal" value={f.base} onChange={c('base')} /><PriceHint g={g} kind="ride_car" field="baseCents" value={f.base} />
+      <label>Per km $</label><input inputMode="decimal" value={f.perKm} onChange={c('perKm')} /><PriceHint g={g} kind="ride_car" field="perKmCents" value={f.perKm} />
+      <label>Minimum fare $</label><input inputMode="decimal" value={f.minimum} onChange={c('minimum')} /><PriceHint g={g} kind="ride_car" field="minimumCents" value={f.minimum} />
+      <label>Night extra $</label><input inputMode="decimal" value={f.night} onChange={c('night')} />
       <div className="row"><div><label>Waiting per minute $</label><input value={f.wait} onChange={c('wait')} /></div><div><label>Cancel / no-show fee $</label><input value={f.cancel} onChange={c('cancel')} /></div></div>
       <p className="small">The first few minutes of waiting are free. You get the cancel fee if a rider cancels late or doesn't come out.</p>
       <button className="block" disabled={!photo} onClick={submit}>Send for approval</button>
+    </div>
+  );
+}
+
+function RidePrices({ me, g, reload }: { me: any; g: Guide | null; reload: () => void }) {
+  const r0 = me.rides.rateCard;
+  const [f, setF] = useState({ base: dollars(r0.base_cents), perKm: dollars(r0.per_km_cents), minimum: dollars(r0.minimum_cents), night: dollars(r0.night_cents), wait: dollars(r0.wait_per_min_cents), cancel: dollars(r0.cancel_cents) });
+  const [msg, setMsg] = useState('');
+  const c = (k: keyof typeof f) => (e: any) => setF({ ...f, [k]: e.target.value });
+  const cents = (v: string) => Math.round(Number(v || 0) * 100);
+  const save = async () => {
+    try { await call('/api/driver/rides/rate-card', { method: 'PUT', body: { baseCents: cents(f.base), perKmCents: cents(f.perKm), minimumCents: cents(f.minimum), nightCents: cents(f.night), waitPerMinCents: cents(f.wait), cancelCents: cents(f.cancel) } }); setMsg('Ride prices saved'); reload(); }
+    catch (e) { setMsg(explain(e)); }
+  };
+  const suggest = () => { if (!g) return; const r = g.rates.ride_car.recommended; setF({ ...f, base: dollars(r.baseCents), perKm: dollars(r.perKmCents), minimum: dollars(r.minimumCents) }); };
+  return (
+    <div className="card">
+      <h3>My ride prices</h3>
+      {me.online && <p className="small">Go offline to change your prices.</p>}
+      <label>Starting price $</label><input inputMode="decimal" value={f.base} onChange={c('base')} /><PriceHint g={g} kind="ride_car" field="baseCents" value={f.base} />
+      <label>Per km $</label><input inputMode="decimal" value={f.perKm} onChange={c('perKm')} /><PriceHint g={g} kind="ride_car" field="perKmCents" value={f.perKm} />
+      <label>Minimum fare $</label><input inputMode="decimal" value={f.minimum} onChange={c('minimum')} /><PriceHint g={g} kind="ride_car" field="minimumCents" value={f.minimum} />
+      <div className="row"><div><label>Night $</label><input inputMode="decimal" value={f.night} onChange={c('night')} /></div><div><label>Waiting / min $</label><input inputMode="decimal" value={f.wait} onChange={c('wait')} /></div></div>
+      <label>Cancel / no-show fee $</label><input inputMode="decimal" value={f.cancel} onChange={c('cancel')} />
+      <div className="row" style={{ marginTop: 10 }}>
+        <button className="secondary" disabled={me.online || !g} onClick={suggest}>Use suggested prices</button>
+        <button disabled={me.online} onClick={save}>Save ride prices</button>
+      </div>
+      {msg && <p className="small" style={{ marginTop: 8 }}>{msg}</p>}
     </div>
   );
 }
@@ -767,6 +911,9 @@ function Me({ me, reload }: { me: any; reload: () => void }) {
   const [earn, setEarn] = useState<any[]>([]);
   const [rc, setRc] = useState(me.rateCard);
   const [msg, setMsg] = useState('');
+  const g = useGuide();
+  const kind = kindFor('delivery', me.vehicle?.type);
+  const reset = () => { if (!g) return; const r = g.rates[kind].recommended; setRc({ ...rc, base_cents: r.baseCents, per_km_cents: r.perKmCents, minimum_cents: r.minimumCents }); };
   useEffect(() => { call('/api/driver/earnings').then((r) => setEarn(r.days)).catch(() => {}); }, []);
   const save = async () => {
     try { await call('/api/driver/rate-card', { method: 'PUT', body: { baseCents: rc.base_cents, perKmCents: rc.per_km_cents, minimumCents: rc.minimum_cents, nightCents: rc.night_cents, bulkyCents: rc.bulky_cents } }); setMsg('Prices saved'); reload(); }
@@ -788,12 +935,18 @@ function Me({ me, reload }: { me: any; reload: () => void }) {
       <div className="card">
         <h3>My prices</h3>
         {me.online && <p className="small">Go offline to change your prices.</p>}
-        <div className="row"><div><label>Base $</label><input defaultValue={(rc.base_cents / 100).toFixed(2)} onChange={f('base_cents')} /></div><div><label>Per km $</label><input defaultValue={(rc.per_km_cents / 100).toFixed(2)} onChange={f('per_km_cents')} /></div></div>
-        <div className="row"><div><label>Minimum $</label><input defaultValue={(rc.minimum_cents / 100).toFixed(2)} onChange={f('minimum_cents')} /></div><div><label>Night $</label><input defaultValue={(rc.night_cents / 100).toFixed(2)} onChange={f('night_cents')} /></div></div>
-        <label>Bulky $</label><input defaultValue={(rc.bulky_cents / 100).toFixed(2)} onChange={f('bulky_cents')} />
-        <button className="block" style={{ marginTop: 10 }} disabled={me.online} onClick={save}>Save prices</button>
+        <GuideNote g={g} />
+        <label>Starting price $</label><input key={`b${rc.base_cents}`} defaultValue={dollars(rc.base_cents)} onBlur={f('base_cents')} /><PriceHint g={g} kind={kind} field="baseCents" value={dollars(rc.base_cents)} />
+        <label>Per km $</label><input key={`k${rc.per_km_cents}`} defaultValue={dollars(rc.per_km_cents)} onBlur={f('per_km_cents')} /><PriceHint g={g} kind={kind} field="perKmCents" value={dollars(rc.per_km_cents)} />
+        <label>Minimum $</label><input key={`m${rc.minimum_cents}`} defaultValue={dollars(rc.minimum_cents)} onBlur={f('minimum_cents')} /><PriceHint g={g} kind={kind} field="minimumCents" value={dollars(rc.minimum_cents)} />
+        <div className="row"><div><label>Night $</label><input defaultValue={dollars(rc.night_cents)} onChange={f('night_cents')} /></div><div><label>Bulky $</label><input defaultValue={dollars(rc.bulky_cents)} onChange={f('bulky_cents')} /></div></div>
+        <div className="row" style={{ marginTop: 10 }}>
+          <button className="secondary" disabled={me.online || !g} onClick={reset}>Use suggested prices</button>
+          <button disabled={me.online} onClick={save}>Save prices</button>
+        </div>
         {msg && <p className="small" style={{ marginTop: 8 }}>{msg}</p>}
       </div>
+      {me.rides?.status === 'approved' && me.rides.rateCard && <RidePrices me={me} g={g} reload={reload} />}
       <button className="secondary block" onClick={() => { setToken('driver', null); location.reload(); }}>Sign out</button>
     </>
   );
