@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12+ splash screen background, behind the app icon -->
+    <color name="kg_orange">#ED7A08</color>
+</resources>

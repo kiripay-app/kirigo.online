@@ -19,9 +19,9 @@ jobs:
       contents: read
     runs-on: ubuntu-24.04   # pinned, like KiriPay's: newer images change the Android tools
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -48,6 +48,12 @@ jobs:
         run: |
           npx cap add android
           cp android-config/google-services.json android/app/google-services.json
+          # KiriGo's icon and splash screen instead of Capacitor's placeholders (files in android-config/res/)
+          find android/app/src/main/res -name 'splash.png' -delete
+          cp -r android-config/res/. android/app/src/main/res/
+          # Android 12+ splash: orange behind the icon (the splash-screen style is in the generated styles.xml)
+          sed -i 's#<item name="android:background">@drawable/splash</item>#&\n        <item name="windowSplashScreenBackground">@color/kg_orange</item>#' android/app/src/main/res/values/styles.xml
+          grep -q kg_orange android/app/src/main/res/values/styles.xml || echo "::warning::Couldn't set the Android 12+ splash colour (styles.xml changed); the icon is still KiriGo's"
           # the name of the "KiriGo Driver is online" notification channel, as drivers see it in their phone settings
           sed -i 's#</resources>#    <string name="capacitor_background_geolocation_notification_channel_name">Online status</string>\n</resources>#' android/app/src/main/res/values/strings.xml
           npx cap sync android
@@ -58,7 +64,7 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: kirigo-driver-debug-apk
           path: apps/web/android/app/build/outputs/apk/debug/app-debug.apk
