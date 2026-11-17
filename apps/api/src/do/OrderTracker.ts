@@ -18,6 +18,11 @@ export class OrderTracker extends DurableObject<Env> {
       return Response.json(last ?? null);
     }
 
+    // the route driven so far (admin live map). Read-only; the driver's points are kept only from accept to handed over, as before
+    if (op === 'route') {
+      return Response.json((await this.ctx.storage.get<Point[]>(`route:${url.searchParams.get('orderId') ?? ''}`)) ?? []);
+    }
+
     if (op === 'socket') {
       const who = url.searchParams.get('who') ?? 'viewer';
       const pair = new WebSocketPair();

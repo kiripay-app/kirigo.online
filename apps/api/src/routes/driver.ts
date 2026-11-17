@@ -7,6 +7,7 @@ import { requireDriver, requireMember, signSession, type SessionClaims } from '.
 import { checkHandoff, trackTicket } from '../lib/handoff';
 import { notify } from '../lib/notify';
 import { driverCameOnline } from '../lib/waits';
+import { estimate } from '../lib/estimate';
 import { nextDriver, pushToDriver } from '../lib/matching';
 import { eventStmt, getOrder, notDelivered, payDriver, transition, type OrderRow } from '../lib/orders';
 import { claimPhoto, savePhoto, type PhotoKind } from '../lib/photos';
@@ -17,7 +18,7 @@ import { driverDropped, isSend, openJobs, placeBid, returnToSender, sendDelivere
 import { chargeMonthlyFee, feeStatus } from '../lib/fees';
 import { orderView } from '../lib/views';
 import { ApiError, body, newId, nowIso, plusMs, takeAttempt } from '../lib/util';
-import { haversine } from '@kirigo/shared';
+import { SIZES, haversine } from '@kirigo/shared';
 
 export const driver = new Hono<AppEnv>();
 
@@ -104,6 +105,19 @@ d.get('/me', async (c) => {
 });
 
 d.get('/rates', async (c) => c.json(rateGuide(await loadSettings(c.env.DB))));
+
+/** Price estimator: what a trip costs with my prices, and KiriGo's suggested price, before quoting a customer. */
+d.post('/estimate', async (c) => {
+  const pt = z.object({ lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180) });
+  const b = await body(c, z.object({
+    service: z.enum(['delivery', 'ride']),
+    from: pt.optional(), to: pt.optional(), distanceKm: z.number().min(0).max(200).optional(),
+    size: z.enum(SIZES).default('small'),
+    night: z.boolean().nullable().default(null),
+    passengers: z.number().int().min(1).max(12).default(1),
+  }));
+  return c.json(await estimate(c.env, meId(c), b));
+});
 
 d.put('/rate-card', async (c) => {
   const rc = await body(c, rateCardSchema);
@@ -266,7 +280,9 @@ d.post('/jobs/:id/gps', async (c) => {
   const stub = c.env.ORDER_TRACKER.get(c.env.ORDER_TRACKER.idFromName(o.parent_order_id ?? o.id));
   await stub.fetch('https://do/gps', { method: 'POST', body: JSON.stringify({ orderId: o.id, driverId: meId(c), points: b.points }) });
   const last = b.points.at(-1)!;
-  await presence(c.env, 'position', { driverId: meId(c), lat: last.lat, lng: last.lng });
+  const seen = await presence(c.env, 'position', { driverId: meId(c), lat: last.lat, lng: last.lng });
+  // the matcher lost track of this driver (e.g. after a restart) but they're on a job: put them back so the admin map still shows them
+  if (seen?.offline) await presence(c.env, 'online', { driverId: meId(c), lat: last.lat, lng: last.lng });
   if (o.service === 'ride') await watchRide(c.env, o, last);
   return c.json({ ok: true });
 });

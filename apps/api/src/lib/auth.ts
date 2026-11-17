@@ -100,6 +100,7 @@ export function requireAdmin() {
     if (!s.adm) throw new ApiError('FORBIDDEN', 403);
     if (!s.mfa) throw new ApiError('TWO_STEP_REQUIRED', 403);
     c.set('actor', { type: 'admin', id: s.sub, role: s.adm });
+    (c as any).set('session', s);
     await next();
   };
 }

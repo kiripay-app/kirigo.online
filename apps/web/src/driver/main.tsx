@@ -5,6 +5,7 @@ import { ApiError, captureToken, client, explain, money, sessionClaims, setToken
 import { CameraShot, QrScan } from './camera';
 // the map (Leaflet + map tiles) loads only when the "where am I seen" map is opened: a much smaller first download
 const WhereMap = lazy(() => import('./where').then((m) => ({ default: m.WhereMap })));
+const TripMap = lazy(() => import('./tripmap').then((m) => ({ default: m.TripMap })));
 import { appUpdate, isApp, openDownload, setupPush, startBackgroundLocation, stopBackgroundLocation, type PublicApp } from './native';
 import { ring, unlockSounds } from './sounds';
 
@@ -274,7 +275,7 @@ function Pending({ me }: { me: any }) {
 // ------------------------------------------------------------------ home
 
 function Home({ me, reload }: { me: any; reload: () => void }) {
-  const [tab, setTab] = useState<'work' | 'send' | 'me'>('work');
+  const [tab, setTab] = useState<'work' | 'send' | 'estimate' | 'me'>('work');
   const [offers, setOffers] = useState<any[]>([]);
   const [jobs, setJobs] = useState<any[]>([]);
   const [open, setOpen] = useState<string | null>(null);
@@ -362,11 +363,11 @@ function Home({ me, reload }: { me: any; reload: () => void }) {
   return (
     <div className="app">
       <Top right={<span className={`pill ${me.online ? 'good' : ''}`}>{me.online ? 'Online' : 'Offline'}</span>} />
-      <nav className="tabs"><button className={tab === 'work' ? 'on' : ''} onClick={() => setTab('work')}>Work</button><button className={tab === 'send' ? 'on' : ''} onClick={() => setTab('send')}>Parcels</button><button className={tab === 'me' ? 'on' : ''} onClick={() => setTab('me')}>Me</button></nav>
+      <nav className="tabs"><button className={tab === 'work' ? 'on' : ''} onClick={() => setTab('work')}>Work</button><button className={tab === 'send' ? 'on' : ''} onClick={() => setTab('send')}>Parcels</button><button className={tab === 'estimate' ? 'on' : ''} onClick={() => setTab('estimate')}>Estimate</button><button className={tab === 'me' ? 'on' : ''} onClick={() => setTab('me')}>Me</button></nav>
       <UpdateNotice />
       {err && <div className="error">{err}</div>}
       {queued > 0 && <div className="notice">{queued} handoff(s) saved offline — they'll send when you have signal. You're paid when they do.</div>}
-      {tab === 'send' ? <SendJobs me={me} /> : tab === 'me' ? <Me me={me} reload={reload} /> : (
+      {tab === 'send' ? <SendJobs me={me} /> : tab === 'estimate' ? <Estimate me={me} /> : tab === 'me' ? <Me me={me} reload={reload} /> : (
         <>
           {me.fee?.due && <div className="notice">Your monthly fee of {money(me.fee.amountCents)} is due. <button onClick={async () => { try { await call('/api/driver/fee/pay', { method: 'POST' }); reload(); } catch (e) { setErr(explain(e)); } }}>Pay from KiriPay</button></div>}
           {!me.online
@@ -875,6 +876,90 @@ function RideApply({ onDone }: { onDone: () => void }) {
       <p className="small">The first few minutes of waiting are free. You get the cancel fee if a rider cancels late or doesn't come out.</p>
       <button className="block" disabled={!photo} onClick={submit}>Send for approval</button>
     </div>
+  );
+}
+
+// ------------------------------------------------------------------ price estimator
+
+type Pt = { lat: number; lng: number };
+
+/**
+ * What a trip would cost with my prices, before quoting a customer: tap the pickup and drop-off on the map (or type
+ * the distance), and see my price step by step next to KiriGo's suggested price. For rides, also the share per person.
+ */
+function Estimate({ me }: { me: any }) {
+  const canRide = me.rides?.status === 'approved';
+  const [service, setService] = useState<'delivery' | 'ride'>(canRide && !me.services?.deliveries ? 'ride' : 'delivery');
+  const [from, setFrom] = useState<Pt | null>(null);
+  const [to, setTo] = useState<Pt | null>(null);
+  const [km, setKm] = useState('');
+  const [size, setSize] = useState<'small' | 'medium' | 'bulky'>('small');
+  const [night, setNight] = useState<'auto' | 'day' | 'night'>('auto');
+  const [people, setPeople] = useState(1);
+  const [r, setR] = useState<any>(null);
+  const [err, setErr] = useState('');
+  const tap = (p: Pt) => { if (!from || (from && to)) { setFrom(p); setTo(null); } else setTo(p); setKm(''); };
+  const useHere = () => { const g = here(); if (!g.lat && !g.lng) { setErr("Your phone hasn't shared its location yet. Turn on location, or tap the map."); return; } setErr(''); setFrom({ lat: g.lat, lng: g.lng }); setTo(null); setKm(''); };
+
+  useEffect(() => {
+    const dist = Number(km);
+    if (!(from && to) && !(dist > 0)) { setR(null); return; }
+    let live = true;
+    setErr('');
+    call('/api/driver/estimate', { body: { service, ...(from && to ? { from, to } : { distanceKm: dist }), size, night: night === 'auto' ? null : night === 'night', passengers: people } })
+      .then((x) => { if (live) setR(x); }).catch((e) => { if (live) setErr(explain(e)); });
+    return () => { live = false; };
+  }, [service, from?.lat, from?.lng, to?.lat, to?.lng, km, size, night, people]);
+
+  const st = r?.your?.steps;
+  return (
+    <>
+      <div className="card">
+        <h3>Price estimate</h3>
+        <p className="small">Work out a price before you quote a customer. It uses your own prices and the same road distance KiriGo uses for bookings.</p>
+        <div className="row" role="radiogroup" aria-label="Kind of trip">
+          <button role="radio" aria-checked={service === 'delivery'} className={service === 'delivery' ? '' : 'secondary'} onClick={() => setService('delivery')}>Delivery</button>
+          <button role="radio" aria-checked={service === 'ride'} className={service === 'ride' ? '' : 'secondary'} onClick={() => setService('ride')}>Ride</button>
+        </div>
+        <p className="small" style={{ marginTop: 10 }}>{!from ? 'Tap the map where the trip starts.' : !to ? 'Now tap where it ends.' : 'Tap again to start a new trip.'}</p>
+        <Suspense fallback={<p className="small">Loading map…</p>}><TripMap from={from} to={to} onTap={tap} /></Suspense>
+        <div className="row">
+          <button className="secondary" onClick={useHere}>Start from where I am</button>
+          {(from || to) && <button className="secondary" onClick={() => { setFrom(null); setTo(null); }}>Clear</button>}
+        </div>
+        <label htmlFor="est-km">Or type the distance (km)</label>
+        <input id="est-km" inputMode="decimal" placeholder="e.g. 6.5" value={km} onChange={(e) => { setKm(e.target.value); setFrom(null); setTo(null); }} />
+        {service === 'delivery' ? <>
+          <label htmlFor="est-size">Size</label>
+          <select id="est-size" value={size} onChange={(e) => setSize(e.target.value as any)}><option value="small">Small</option><option value="medium">Medium</option><option value="bulky">Bulky (your bulky extra)</option></select>
+        </> : <>
+          <label htmlFor="est-people">Passengers sharing the fare</label>
+          <input id="est-people" inputMode="numeric" type="number" min={1} max={12} value={people} onChange={(e) => setPeople(Math.max(1, Math.min(12, Number(e.target.value) || 1)))} />
+        </>}
+        <label htmlFor="est-night">Time</label>
+        <select id="est-night" value={night} onChange={(e) => setNight(e.target.value as any)}><option value="auto">Now</option><option value="day">Daytime</option><option value="night">Night (your night extra)</option></select>
+      </div>
+
+      {err && <div className="error">{err}</div>}
+      {r && (
+        <div className="card">
+          <p className="small">{(r.distanceM / 1000).toFixed(1)} km by road{r.night ? ', night' : ''}</p>
+          {r.your ? <>
+            <div className="between"><h3 style={{ margin: 0 }}>Your price</h3><b style={{ fontSize: '1.6rem' }}>{money(r.your.totalCents)}</b></div>
+            {r.your.fairPrice && <span className="pill">Fair price</span>}
+            <table className="small" style={{ width: '100%', marginTop: 8 }}><tbody>
+              <tr><td>Starting price</td><td style={{ textAlign: 'right' }}>{money(st.baseCents)}</td></tr>
+              <tr><td>{(r.distanceM / 1000).toFixed(1)} km × {money(st.perKmCents)}</td><td style={{ textAlign: 'right' }}>{money(st.distanceCents)}</td></tr>
+              {st.minimumApplied && <tr><td>Raised to your minimum</td><td style={{ textAlign: 'right' }}>{money(st.minimumCents)}</td></tr>}
+              {st.nightCents > 0 && <tr><td>Night extra</td><td style={{ textAlign: 'right' }}>{money(st.nightCents)}</td></tr>}
+              {st.extraCents > 0 && <tr><td>Bulky extra</td><td style={{ textAlign: 'right' }}>{money(st.extraCents)}</td></tr>}
+            </tbody></table>
+            {r.your.perPersonCents != null && r.passengers > 1 && <p style={{ marginTop: 8 }}>Shared by {r.passengers}: about <b>{money(r.your.perPersonCents)}</b> each.</p>}
+          </> : <p>{service === 'ride' ? "You haven't set ride prices yet, so here is KiriGo's suggestion." : "You haven't set delivery prices yet, so here is KiriGo's suggestion."}</p>}
+          <p className="small" style={{ marginTop: 8 }}>KiriGo suggests {money(r.suggestedCents)} for this trip. Drivers can charge from {money(r.range.lowestCents)} to {money(r.range.highestCents)}.</p>
+        </div>
+      )}
+    </>
   );
 }
 

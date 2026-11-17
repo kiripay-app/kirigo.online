@@ -58,6 +58,6 @@ auth.get('/dev', async (c) => {
   if (c.env.KIRIPAY_MODE !== 'mock' || c.env.APP_ENV === 'production') throw new ApiError('NOT_FOUND', 404);
   const user = c.req.query('user') ?? 'u_dev';
   const drv = await c.env.DB.prepare('SELECT id FROM drivers WHERE kiripay_user_id=?').bind(user).first<{ id: string }>();
-  const token = await signSession(c.env, { sub: user, name: c.req.query('name') ?? 'Dev', mfa: true, adm: c.req.query('admin') ? 'super' : null, drv: drv?.id ?? null, kyc: Number(c.req.query('kyc') ?? 2) });
+  const token = await signSession(c.env, { sub: user, name: c.req.query('name') ?? 'Dev', mfa: true, adm: c.req.query('admin') ? (c.req.query('admin') === 'cashier' ? 'cashier' : 'super_admin') : null, drv: drv?.id ?? null, kyc: Number(c.req.query('kyc') ?? 2) });
   return c.json({ token });
 });

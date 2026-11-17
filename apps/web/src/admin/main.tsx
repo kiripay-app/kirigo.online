@@ -1,6 +1,7 @@
 import { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { captureToken, client, explain, money, setToken } from '../api';
+import { LiveAccess, LiveMap } from './live';
 import { PinMap } from './pin';
 
 const call = client('admin', () => location.reload());
@@ -13,14 +14,25 @@ function App() {
     <div className="app"><div className="top"><span className="logo">KiriGo Admin</span></div>
       <div className="card"><p>Sign in with your KiriPay admin account (two-step sign-in required).</p><a className="btn block" href="/auth/start?app=admin">Sign in with KiriPay</a></div></div>
   );
-  const tabs: [string, string][] = [['alerts', 'Alerts'], ['settings', 'Settings'], ['prices', 'Prices'], ['landmarks', 'Landmarks'], ['drivers', 'Drivers'], ['rides', 'Ride approvals'], ['problems', 'Problems'], ['orders', 'Orders'], ['flags', 'Ratings'], ['selfies', 'Shift selfies'], ['money', 'Money']];
+  return <Shell tab={tab} setTab={setTab} />;
+}
+
+function Shell({ tab, setTab }: { tab: string; setTab: (t: string) => void }) {
+  // who am I: decides whether the Live map tab and its access switches are shown (the API checks again on every request)
+  const [me, setMe] = useState<{ isSuper: boolean; liveMap: boolean } | null>(null);
+  useEffect(() => { call<{ isSuper: boolean; liveMap: boolean }>('/api/admin/me').then(setMe).catch(() => setMe({ isSuper: false, liveMap: false })); }, []);
+  const tabs: [string, string][] = [
+    ...(me?.liveMap ? [['live', 'Live map'] as [string, string]] : []),
+    ['alerts', 'Alerts'], ['settings', 'Settings'], ['prices', 'Prices'], ['landmarks', 'Landmarks'], ['drivers', 'Drivers'], ['rides', 'Ride approvals'], ['problems', 'Problems'], ['orders', 'Orders'], ['flags', 'Ratings'], ['selfies', 'Shift selfies'], ['money', 'Money'],
+  ];
   return (
     <div className="app wide">
       <div className="top"><span className="logo">KiriGo Admin</span><button className="secondary" onClick={() => { setToken('admin', null); location.reload(); }}>Sign out</button></div>
       <nav className="tabs">{tabs.map(([k, l]) => <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>)}</nav>
+      {tab === 'live' && me?.liveMap && <LiveMap call={call} />}
       {tab === 'alerts' && <Alerts />}
       {tab === 'rides' && <RideApprovals />}
-      {tab === 'settings' && <><PhoneAlerts /><Settings /></>}
+      {tab === 'settings' && <>{me?.isSuper && <LiveAccess call={call} />}<PhoneAlerts /><Settings /></>}
       {tab === 'prices' && <Prices />}
       {tab === 'landmarks' && <Landmarks />}
       {tab === 'drivers' && <Drivers />}

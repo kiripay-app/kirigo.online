@@ -48,3 +48,21 @@ nav.tabs button { background: var(--panel); color: var(--text); border: 1px soli
 nav.tabs button.on { background: var(--accent); color: var(--accent-ink); }
 .offer { border-color: var(--accent); }
 .countdown { font-variant-numeric: tabular-nums; }
+
+/* ---- admin live map ---- */
+.lm-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-bottom: 4px; }
+.lm-stats .card { margin-bottom: 8px; padding: 10px 12px; }
+.lm { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 12px; align-items: start; }
+.lm-map { height: 72vh; min-height: 440px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); z-index: 0; }
+.lm-side { max-height: 78vh; overflow: auto; padding-right: 2px; }
+.lm-row { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin: 6px 0 0; font-weight: 400; }
+.lm-row.on { border-color: var(--accent); background: #0e4565; }
+.lm-row .between { width: 100%; }
+.lm-driver { width: 30px; height: 30px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 1px 6px rgba(0,0,0,.55); color: #04202f; font: 800 11px/24px var(--display); text-align: center; }
+.lm-pin { width: 16px; height: 16px; border: 3px solid #fff; box-shadow: 0 1px 5px rgba(0,0,0,.5); }
+.lm-pin.square { border-radius: 3px; } .lm-pin.flag { border-radius: 50% 50% 50% 0; transform: rotate(-45deg); }
+.lm-pin.pulse { animation: lmpulse 1.4s ease-out infinite; }
+@keyframes lmpulse { 0% { box-shadow: 0 0 0 0 rgba(240,84,79,.8); } 100% { box-shadow: 0 0 0 16px rgba(240,84,79,0); } }
+@media (prefers-reduced-motion: reduce) { .lm-pin.pulse { animation: none; } }
+.lm-key { display: inline-block; width: 11px; height: 11px; border-radius: 50%; margin: 0 4px 0 12px; vertical-align: -1px; } .lm-key.sq { border-radius: 3px; } .lm-key:first-child { margin-left: 0; }
+@media (max-width: 900px) { .lm { grid-template-columns: 1fr; } .lm-side { max-height: none; } .lm-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } .lm-map { height: 60vh; } }

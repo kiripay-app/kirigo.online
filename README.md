@@ -55,6 +55,7 @@ real escrow — see `docs/kiripay-escrow.md`.
 - Pay first: the customer's goods + delivery go into a KiriPay hold before anyone is told; a hold can pay for one order only
 - 60-second offers, automatic fallback to the customer's next driver, driver can give a job back before pickup
 - Live GPS (accept → handoff) over WebSockets; the route saved once per trip
+- Admin Live map: online drivers (latest position, memory only) and trips as they happen. Super admins always see it; other admins only when a super admin switches them on (Settings → Live map access)
 - Handoff: signed QR (checked offline on the driver's phone) or 4-digit code (online, 5 tries), in-app photo, someone-else
   and child flags, adults only after 22:00, offline handoffs synced later
 - Driver paid 100% at handoff; shop paid on "Received, all correct" or 24 h later

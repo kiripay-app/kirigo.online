@@ -17,7 +17,7 @@ Repo: `kiripay-app/kirigo.online` (private). Deploys to Cloudflare on push to `m
 5. **`order_events` is append-only.** No UPDATE or DELETE on it, ever, including admin.
 6. **Store UTC, display Kiribati time** (Pacific/Tarawa, UTC+12), dates `dd/mm/yyyy`.
 7. **Every number in the rules is a setting** (table `settings`), never hard-coded.
-8. **Location is tracked only from accept to handed-over.** Never while a driver is merely online.
+8. **Location is saved only from accept to handed-over.** While a driver is merely online, their latest position lives in memory (`DriverPresence`) for matching, and authorised admins can see it live on the admin Live map. It is never written to the database and no trail of an idle driver is kept. The privacy policy and the Google Play location disclosure must say this.
 9. Greeting in UI is "Mauri". English UI first; Kiribati strings come later after native-speaker review.
 
 ---
@@ -188,6 +188,10 @@ GET  /admin/disputes
 POST /admin/disputes/:id/rule        shop | customer | driver, partial amounts
 GET  /admin/orders/:id               full event log, route replay, photos
 GET  /admin/flags                    low ratings, failed corrections
+GET  /admin/me                       who am I, may I open the Live map
+GET  /admin/live                     Live map: drivers online + last position, trips waiting / in progress / just finished, picked driver (needs Live map access)
+GET  /admin/live/trips/:id/route     route driven so far on one trip (needs Live map access)
+GET/PUT /admin/live-access[/:userId] super admin only: switch Live map access on/off per admin; includes who-viewed log
 GET  /admin/selfies?sample=20        spot-check shift selfies vs KYC
 ```
 

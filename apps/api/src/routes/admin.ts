@@ -13,11 +13,53 @@ import { loadSettings, missingForLaunch, saveSettings } from '../lib/settings';
 import { orderView } from '../lib/views';
 import { photoUrl, savePhoto } from '../lib/photos';
 import { keyState, testDriver } from '../lib/push';
+import { canSeeLive, isSuper, liveSnapshot, logLive, logViewOnce, requireLiveMap, touchAdmin, tripRoute } from '../lib/live';
 import { ApiError, body, nowIso } from '../lib/util';
 
 export const admin = new Hono<AppEnv>();
 admin.use('*', requireAdmin());
 const who = (c: any) => c.get('actor').id as string;
+
+// ------------------------------------------------------------------ live operations map
+
+/** Who am I, and what may I open. The screen calls this on load; it also puts the admin on the super admin's access list. */
+admin.get('/me', async (c) => {
+  const a = c.get('actor') as { id: string; role: string };
+  const name = String((c as any).get('session')?.name ?? '');
+  await touchAdmin(c.env, a.id, name, a.role);
+  return c.json({ id: a.id, name, role: a.role, isSuper: isSuper(a.role), liveMap: await canSeeLive(c.env, a) });
+});
+
+/** Drivers online with their last position, trips waiting / in progress / just finished, and who each customer picked. */
+admin.get('/live', requireLiveMap(), async (c) => {
+  await logViewOnce(c.env, c.get('actor') as any);
+  return c.json(await liveSnapshot(c.env), 200, { 'cache-control': 'no-store' });
+});
+
+/** The route driven so far on one trip. */
+admin.get('/live/trips/:id/route', requireLiveMap(), async (c) => c.json(await tripRoute(c.env, c.req.param('id') ?? ''), 200, { 'cache-control': 'no-store' }));
+
+/** Super admin only: who may open the live map. Super admins always can. */
+const superOnly = async (c: any, next: any) => { if (!isSuper(c.get('actor').role)) throw new ApiError('SUPER_ADMIN_ONLY', 403); await next(); };
+
+admin.get('/live-access', superOnly, async (c) => {
+  const [admins, log] = await Promise.all([
+    c.env.DB.prepare('SELECT user_id, name, role, live_map, changed_by, changed_at, last_seen_at FROM admin_access ORDER BY name COLLATE NOCASE').all(),
+    c.env.DB.prepare('SELECT at, user_id, name, action, detail FROM live_map_log ORDER BY id DESC LIMIT 40').all(),
+  ]);
+  return c.json({ admins: (admins.results ?? []).map((r: any) => ({ ...r, always: isSuper(r.role) })), log: log.results ?? [] });
+});
+
+admin.put('/live-access/:userId', superOnly, async (c) => {
+  const b = await body(c, z.object({ enabled: z.boolean() }));
+  const id = c.req.param('userId') ?? '';
+  const row = await c.env.DB.prepare('SELECT user_id, name, role FROM admin_access WHERE user_id=?').bind(id).first<{ user_id: string; name: string; role: string }>();
+  if (!row) throw new ApiError('NOT_FOUND', 404);
+  if (isSuper(row.role)) throw new ApiError('SUPER_ADMIN_ALWAYS', 409);
+  await c.env.DB.prepare('UPDATE admin_access SET live_map=?, changed_by=?, changed_at=? WHERE user_id=?').bind(b.enabled ? 1 : 0, who(c), nowIso(), id).run();
+  await logLive(c.env, c.get('actor') as any, b.enabled ? 'grant' : 'revoke', `${row.name || id}`, String((c as any).get('session')?.name ?? ''));
+  return c.json({ ok: true });
+});
 
 admin.get('/settings', async (c) => {
   const s = await loadSettings(c.env.DB);

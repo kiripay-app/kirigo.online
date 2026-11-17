@@ -104,6 +104,15 @@ async function main() {
   // ---- changing prices later stays in the range
   await drv('/offline', { method: 'POST' });
   ok(await fails_with(drv('/rides/rate-card', { method: 'PUT', body: { ...rideCard, perKmCents: 200 } }), 'RATE_OUT_OF_RANGE'), 'raising the ride per-km price past the ceiling is refused');
+  // ---- price estimator
+  const ed = await drv('/estimate', { method: 'POST', body: { service: 'delivery', distanceKm: 5, night: false } });
+  ok(ed.your.totalCents === 500 && ed.your.steps.distanceCents === 300 && ed.suggestedCents === 500 && ed.your.fairPrice, `delivery 5 km: $2.00 start + 5 × $0.60 = ${ed.your.totalCents}c, same as suggested`);
+  const er = await drv('/estimate', { method: 'POST', body: { service: 'ride', distanceKm: 5, night: false, passengers: 3 } });
+  ok(er.your.totalCents === 450 && er.your.perPersonCents === 150, `ride 5 km for 3 people: ${er.your.totalCents}c, ${er.your.perPersonCents}c each`);
+  const short = await drv('/estimate', { method: 'POST', body: { service: 'ride', distanceKm: 1, night: false } });
+  ok(short.your.totalCents === 300 && short.your.steps.minimumApplied, 'a 1 km ride is raised to the $3.00 minimum');
+  const mapped = await drv('/estimate', { method: 'POST', body: { service: 'ride', from: PICKUP, to: DEST, night: false } });
+  ok(mapped.distanceM > 8000 && mapped.your.totalCents > 300, `map pins: ${(mapped.distanceM / 1000).toFixed(1)} km by road, ${mapped.your.totalCents}c`);
   await admin(`/landmarks/${lm.id}`, { method: 'DELETE' });
 
   console.log(fails ? `${fails} check(s) failed` : 'all checks passed');
